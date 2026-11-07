@@ -27,3 +27,10 @@ export function validateOutcomeStatus(data: OutcomeSubmissionInput): string[] {
   }
   return errors;
 }
+
+export const ReflectRequestSchema = z.object({
+  query: z.string().min(1, 'Reflect query is required'),
+  context: z.string().optional(),
+});
+
+export type ReflectRequestInput = z.infer<typeof ReflectRequestSchema>;

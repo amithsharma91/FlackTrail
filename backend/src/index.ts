@@ -5,6 +5,7 @@ import { errorHandler, AppError } from './middleware/errorHandler';
 import { healthCheck } from './routes/health';
 import { analyzeIncident } from './routes/analyze';
 import incidentRoutes from './routes/incidents';
+import reflectRoutes from './routes/reflect';
 
 const app = express();
 
@@ -19,6 +20,9 @@ app.post('/api/analyze', analyzeIncident);
 
 // Incidents
 app.use('/api/incidents', incidentRoutes);
+
+// Reflect (explicit, optional - not called during normal analysis)
+app.use('/api/reflect', reflectRoutes);
 
 // 404 handler
 app.use((_req: express.Request, _res: express.Response, next: express.NextFunction) => {

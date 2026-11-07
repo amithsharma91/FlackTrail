@@ -107,3 +107,32 @@ export interface InvestigationData {
   notes?: string;
   timestamp: string;
 }
+
+// Hindsight usage tracking types
+export interface UsageSnapshot {
+  retainCount: number;
+  recallCount: number;
+  reflectCount: number;
+  totalEstimatedCost: number;
+  totalEstimatedRetainCost: number;
+  totalEstimatedRecallCost: number;
+  totalEstimatedReflectCost: number;
+  lastOperationTimestamp?: string;
+  errors: number;
+  measuredTokenCount: number;
+  estimatedTokenCount: number;
+}
+
+export interface BudgetStatus {
+  budgetUsd: number;
+  spentUsd: number;
+  remainingUsd: number;
+  percentUsed: number;
+  warningLevel: 'none' | '50%' | '75%' | '90%';
+  blocked: boolean;
+}
+
+export interface ReflectPermission {
+  allowed: boolean;
+  reason?: string;
+}

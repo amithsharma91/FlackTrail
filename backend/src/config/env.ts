@@ -11,6 +11,9 @@ export const config = {
   port: parseInt(process.env.PORT || '3001', 10),
   nodeEnv: process.env.NODE_ENV || 'development',
   frontendUrl: process.env.FRONTEND_URL || 'http://localhost:5173',
+  // Cost optimization config
+  hindsightMonthlyBudgetUsd: parseFloat(process.env.HINDSIGHT_MONTHLY_BUDGET_USD || '4.75'),
+  hindsightReflectCallLimit: parseInt(process.env.HINDSIGHT_REFLECT_CALL_LIMIT || '10', 10),
 };
 
 export function validateConfig(): string[] {
@@ -21,5 +24,11 @@ export function validateConfig(): string[] {
     errors.push('HINDSIGHT_BANK_ID must not be "default"');
   }
   if (!config.llmApiKey) errors.push('LLM_API_KEY is required');
+  if (config.hindsightMonthlyBudgetUsd < 0) {
+    errors.push('HINDSIGHT_MONTHLY_BUDGET_USD must be non-negative');
+  }
+  if (config.hindsightReflectCallLimit < 0) {
+    errors.push('HINDSIGHT_REFLECT_CALL_LIMIT must be non-negative');
+  }
   return errors;
 }

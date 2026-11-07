@@ -35,6 +35,9 @@ function getHindsightService(): HindsightMemoryService {
   return hindsightService;
 }
 
+// Normal analysis workflow calls RECALL only - never REFLECT.
+const NORMAL_ANALYSIS_CALLS_REFLECT = false;
+
 let incidentCounter = 0;
 
 export const analyzeIncident = asyncHandler(
@@ -55,10 +58,11 @@ export const analyzeIncident = asyncHandler(
     const incidentId = `inc-${Date.now()}-${++incidentCounter}`;
 
     // Step 3: Hindsight RECALL - retrieve similar historical investigations
+    // NOTE: Normal analysis calls RECALL only. REFLECT is never called here.
     let historicalInvestigations: HistoricalInvestigation[] = [];
     try {
       const service = getHindsightService();
-      historicalInvestigations = await service.recallSimilar(
+      historicalInvestigations = await service.recallSimilarTracked(
         parsedFailure.failureSignature,
         [
           `test:${parsedFailure.testName}`,
@@ -70,6 +74,9 @@ export const analyzeIncident = asyncHandler(
       console.warn('Hindsight recall warning:', err.message);
       historicalInvestigations = [];
     }
+
+    // Safety cap: pass at most 5 memories to reasoning
+    historicalInvestigations = historicalInvestigations.slice(0, 5);
 
     // Step 4: AI reasoning
     let aiAnalysis: AIAnalysis;
