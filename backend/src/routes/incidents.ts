@@ -1,10 +1,32 @@
 import { Router, Request, Response } from 'express';
 import { z } from 'zod';
-import { OutcomeSubmissionSchema, validateOutcomeStatus } from '../shared/index';
-
-const incidents: Map<string, any> = new Map();
+import {
+  OutcomeSubmissionSchema,
+  validateOutcomeStatus,
+} from '../shared/index';
+import { HindsightMemoryService } from '../hindsight/service';
+import { config } from '../config/env';
+import { incidents } from '../store/incidents';
 
 const router = Router();
+
+let hindsightService: HindsightMemoryService | null = null;
+
+function getHindsightService(): HindsightMemoryService | null {
+  if (hindsightService !== undefined) {
+    return hindsightService;
+  }
+  if (!config.hindsightApiKey || !config.hindsightBankId) {
+    hindsightService = null;
+    return null;
+  }
+  hindsightService = new HindsightMemoryService(
+    config.hindsightBankId,
+    config.hindsightApiKey,
+    config.hindsightApiUrl
+  );
+  return hindsightService;
+}
 
 router.get('/', async (_req: Request, res: Response): Promise<void> => {
   const incidentList = Array.from(incidents.values()).map((inc: any) => ({
@@ -57,9 +79,33 @@ router.post('/:id/resolve', async (req: Request, res: Response): Promise<void> =
     fixDescription: submission.fixDescription,
     ciResult: submission.ciResult,
     merged: submission.merged,
-    prLink: submission.prLink,
-    notes: submission.notes,
+    prLink: submission.prLink ?? undefined,
+    notes: submission.notes ?? undefined,
   };
+
+  // Hindsight RETAIN: store the confirmed outcome
+  const service = getHindsightService();
+  if (service) {
+    try {
+      await service.retainInvestigation(submission.incidentId, {
+        incidentId: submission.incidentId,
+        testName: incident.parsedFailure.testName,
+        errorMessage: incident.parsedFailure.errorMessage,
+        failureSignature: incident.parsedFailure.failureSignature,
+        environment: incident.parsedFailure.environment,
+        attemptedFix: submission.fixDescription,
+        outcome: submission.status,
+        ciResult: submission.ciResult,
+        merged: submission.merged,
+        prLink: submission.prLink ?? undefined,
+        notes: submission.notes ?? undefined,
+        timestamp: new Date().toISOString(),
+      });
+    } catch (err: any) {
+      // Hindsight retain failure is not fatal; incident is still recorded locally
+      console.warn('Hindsight retain warning:', err.message);
+    }
+  }
 
   incidents.set(submission.incidentId, incident);
 

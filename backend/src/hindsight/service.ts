@@ -1,8 +1,15 @@
 import {
+  HindsightClient,
+  RecallResponse,
+  ReflectResponse,
+  RetainResponse,
+} from '@vectorize-io/hindsight-client';
+import {
   HistoricalInvestigation,
   InvestigationData,
   IncidentStatus,
 } from '../shared/index';
+import { redactSecrets } from '../parser';
 
 export interface HindsightService {
   recallSimilar(
@@ -13,73 +20,179 @@ export interface HindsightService {
     incidentId: string,
     data: InvestigationData
   ): Promise<void>;
+  reflectOnInvestigation(
+    query: string,
+    context?: string
+  ): Promise<{ answer: string; basedOn: Array<{ id?: string; text: string }> }>;
 }
 
 export class HindsightMemoryService implements HindsightService {
   private bankId: string;
-  private apiKey: string;
-  private client: any;
+  private client: HindsightClient;
 
-  constructor(bankId: string, apiKey: string) {
+  constructor(bankId: string, apiKey: string, apiUrl: string) {
+    if (!bankId || bankId === 'default') {
+      throw new Error('HINDSIGHT_BANK_ID must be set and must not be "default"');
+    }
     this.bankId = bankId;
-    this.apiKey = apiKey;
-    this.client = this.initializeClient();
+    this.client = new HindsightClient({
+      baseUrl: apiUrl,
+      apiKey,
+    });
   }
 
-  private initializeClient(): any {
+  /**
+   * RETAIN: Store a confirmed investigation outcome in Hindsight memory.
+   * Secrets are redacted before content is sent to Hindsight.
+   */
+  async retainInvestigation(
+    incidentId: string,
+    data: InvestigationData
+  ): Promise<void> {
+    // Validate input
+    if (!incidentId) {
+      throw new Error('incidentId is required');
+    }
+    if (!data.testName) {
+      throw new Error('testName is required');
+    }
+    if (!data.errorMessage) {
+      throw new Error('errorMessage is required');
+    }
+    if (!data.failureSignature) {
+      throw new Error('failureSignature is required');
+    }
+    if (!data.outcome) {
+      throw new Error('outcome is required');
+    }
+
+    // Only store confirmed outcomes (failed, passed_unmerged, verified)
+    // proposed hypotheses are NOT retained as completed investigations
+    const validOutcomes: IncidentStatus[] = [
+      'failed',
+      'passed_unmerged',
+      'verified',
+    ];
+    if (!validOutcomes.includes(data.outcome)) {
+      throw new Error(
+        `Only confirmed outcomes can be retained. Got: ${data.outcome}`
+      );
+    }
+
+    // Build content - only investigation outcome, never raw uploaded logs
+    const contentLines = [
+      `CI incident ${data.incidentId}: ${data.testName}`,
+      `Error: ${data.errorMessage}`,
+      `Failure signature: ${data.failureSignature}`,
+      `Outcome: ${data.outcome}`,
+    ];
+
+    if (data.attemptedFix) {
+      contentLines.push(`Attempted fix: ${data.attemptedFix}`);
+    }
+    if (data.ciResult) {
+      contentLines.push(`CI result: ${data.ciResult}`);
+    }
+    if (data.merged !== undefined) {
+      contentLines.push(`Change merged: ${data.merged}`);
+    }
+    if (data.prLink) {
+      contentLines.push(`PR link: ${data.prLink}`);
+    }
+    if (data.notes) {
+      contentLines.push(`Notes: ${data.notes}`);
+    }
+    if (data.timestamp) {
+      contentLines.push(`Timestamp: ${data.timestamp}`);
+    }
+
+    const rawContent = contentLines.filter(Boolean).join('\n');
+
+    // Redact secrets before sending to Hindsight
+    const content = redactSecrets(rawContent);
+
+    // Build metadata with tags for filtering
+    const metadata: Record<string, string> = {
+      'status': data.outcome,
+      'test': data.testName,
+      'signature': data.failureSignature,
+      'incident_id': data.incidentId,
+    };
+
     try {
-      // The official Hindsight TypeScript SDK is @vectorize-io/hindsight-client
-      // We initialize it lazily; if the package is not installed or the
-      // SDK API differs, we surface a clear error at call time.
-      const mod = require('@vectorize-io/hindsight-client');
-      // The SDK exports a client factory; we attempt common export shapes.
-      const createClient =
-        mod.createClient || mod.default || mod.HindsightClient;
-      if (createClient) {
-        return new createClient({
-          apiKey: this.apiKey,
-          bankId: this.bankId,
-        });
+      const response: RetainResponse = await this.client.retain(
+        this.bankId,
+        content,
+        {
+          context: 'The FlakeTrail agent is speaking',
+          metadata,
+          documentId: data.incidentId,
+        }
+      );
+
+      if (!response.success) {
+        throw new Error(
+          `Hindsight retain reported failure: items_count=${response.items_count}`
+        );
       }
-      return mod;
-    } catch (err) {
-      // SDK not installed or incompatible; we will throw at call time.
-      return null;
+    } catch (err: any) {
+      throw new Error(
+        `Hindsight retain failed: ${err.message || String(err)}`
+      );
     }
   }
 
+  /**
+   * RECALL: Retrieve similar previous investigations from Hindsight memory.
+   */
   async recallSimilar(
     failureSignature: string,
     tags?: string[]
   ): Promise<HistoricalInvestigation[]> {
-    if (!this.client || typeof this.client.recall !== 'function') {
-      throw new Error(
-        'Hindsight SDK not initialized. Install @vectorize-io/hindsight-client and configure HINDSIGHT_API_KEY/HINDSIGHT_BANK_ID.'
-      );
+    if (!failureSignature) {
+      throw new Error('failureSignature is required');
     }
 
-    try {
-      const result = await this.client.recall({
-        bank: this.bankId,
-        query: failureSignature,
-        tags,
-      });
+    // Build query from failure signature
+    const query = failureSignature;
 
-      // Normalize SDK response into HistoricalInvestigation[]
-      const memories = result.memories || result.results || [];
-      return memories.map((m: any) => ({
-        id: m.id || m.memory_id || '',
-        testName: m.testName || m.entities?.testName || 'unknown',
-        errorMessage: m.text || m.content || '',
-        failureSignature: m.failureSignature || failureSignature,
-        status: m.status || 'proposed',
-        attemptedFix: m.attemptedFix || m.text,
-        ciJobId: m.ciJobId || m.entities?.ciJobId,
-        ciBranch: m.ciBranch || m.entities?.ciBranch,
-        prLink: m.prLink || m.entities?.prLink,
-        timestamp: m.timestamp || m.createdAt || new Date().toISOString(),
-        source: m.id || m.memory_id,
-      }));
+    try {
+      const response: RecallResponse = await this.client.recall(
+        this.bankId,
+        query,
+        {
+          budget: 'mid',
+          trace: false,
+          includeEntities: true,
+          maxEntityTokens: 500,
+        }
+      );
+
+      const results = response.results || [];
+
+      return results.map((m) => {
+        // Extract status from metadata if available
+        const status: IncidentStatus =
+          m.metadata?.status === 'verified' ||
+          m.metadata?.status === 'failed' ||
+          m.metadata?.status === 'passed_unmerged'
+            ? m.metadata.status
+            : 'proposed';
+
+        return {
+          id: m.id ?? '',
+          testName: m.metadata?.test || 'unknown',
+          errorMessage: m.text,
+          failureSignature: m.metadata?.signature || failureSignature,
+          status,
+          attemptedFix: m.context || undefined,
+          ciJobId: undefined,
+          ciBranch: undefined,
+          prLink: undefined,
+          timestamp: m.mentioned_at || m.occurred_start || new Date().toISOString(),
+          source: m.id ?? '',
+        };
+      });
     } catch (err: any) {
       throw new Error(
         `Hindsight recall failed: ${err.message || String(err)}`
@@ -87,44 +200,40 @@ export class HindsightMemoryService implements HindsightService {
     }
   }
 
-  async retainInvestigation(
-    incidentId: string,
-    data: InvestigationData
-  ): Promise<void> {
-    if (!this.client || typeof this.client.retain !== 'function') {
-      throw new Error(
-        'Hindsight SDK not initialized. Install @vectorize-io/hindsight-client and configure HINDSIGHT_API_KEY/HINDSIGHT_BANK_ID.'
-      );
+  /**
+   * REFLECT: Reason over stored investigation memories to answer a question.
+   */
+  async reflectOnInvestigation(
+    query: string,
+    context?: string
+  ): Promise<{
+    answer: string;
+    basedOn: Array<{ id?: string; text: string }>;
+  }> {
+    if (!query) {
+      throw new Error('query is required');
     }
 
     try {
-      const content = [
-        `CI incident ${data.incidentId}: ${data.testName}`,
-        `Error: ${data.errorMessage}`,
-        `Failure signature: ${data.failureSignature}`,
-        `Outcome: ${data.outcome}`,
-        data.attemptedFix ? `Attempted fix: ${data.attemptedFix}` : '',
-        data.ciResult ? `CI result: ${data.ciResult}` : '',
-        data.merged ? 'Change merged: yes' : 'Change merged: no',
-        data.prLink ? `PR link: ${data.prLink}` : '',
-        data.notes ? `Notes: ${data.notes}` : '',
-      ]
-        .filter(Boolean)
-        .join('\n');
+      const response: ReflectResponse = await this.client.reflect(
+        this.bankId,
+        query,
+        {
+          context,
+          budget: 'mid',
+        }
+      );
 
-      await this.client.retain({
-        bank: this.bankId,
-        content,
-        tags: [
-          `status:${data.outcome}`,
-          `test:${data.testName}`,
-          `signature:${data.failureSignature}`,
-        ].filter(Boolean),
-        context: 'The FlakeTrail agent is speaking',
-      });
+      return {
+        answer: response.text,
+        basedOn: (response.based_on || []).map((fact) => ({
+          id: fact.id ?? '',
+          text: fact.text,
+        })),
+      };
     } catch (err: any) {
       throw new Error(
-        `Hindsight retain failed: ${err.message || String(err)}`
+        `Hindsight reflect failed: ${err.message || String(err)}`
       );
     }
   }

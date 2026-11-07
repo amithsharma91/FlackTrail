@@ -14,6 +14,7 @@ import { HindsightMemoryService } from '../hindsight/service';
 import { analyzeFailure } from '../reasoning';
 import { config } from '../config/env';
 import { asyncHandler, AppError } from '../middleware/errorHandler';
+import { incidents } from '../store/incidents';
 
 let hindsightService: HindsightMemoryService | null = null;
 
@@ -27,14 +28,14 @@ function getHindsightService(): HindsightMemoryService {
     }
     hindsightService = new HindsightMemoryService(
       config.hindsightBankId,
-      config.hindsightApiKey
+      config.hindsightApiKey,
+      config.hindsightApiUrl
     );
   }
   return hindsightService;
 }
 
 let incidentCounter = 0;
-const incidents: Map<string, any> = new Map();
 
 export const analyzeIncident = asyncHandler(
   async (req: Request, res: Response): Promise<void> => {
@@ -91,7 +92,7 @@ export const analyzeIncident = asyncHandler(
       outcome: undefined,
       createdAt: new Date().toISOString(),
     };
-    incidents.set(incidentId, incident);
+    incidents.set(incidentId, incident as any);
 
     const response: AnalyzeResponse = {
       incidentId,
@@ -130,66 +131,5 @@ export const getIncident = asyncHandler(
       throw new AppError('Incident not found', 404);
     }
     res.status(200).json(incident);
-  }
-);
-
-export const resolveIncident = asyncHandler(
-  async (req: Request, res: Response): Promise<void> => {
-    const incident = incidents.get(req.params.id);
-    if (!incident) {
-      throw new AppError('Incident not found', 404);
-    }
-
-    // Validate outcome submission
-    const submission = OutcomeSubmissionSchema.parse({
-      ...req.body,
-      incidentId: req.params.id,
-    });
-
-    const statusErrors = validateOutcomeStatus(submission);
-    if (statusErrors.length > 0) {
-      throw new AppError(statusErrors.join(', '), 400);
-    }
-
-    // Store outcome
-    incident.status = submission.status;
-    incident.outcome = {
-      incidentId: submission.incidentId,
-      status: submission.status,
-      fixDescription: submission.fixDescription,
-      ciResult: submission.ciResult,
-      merged: submission.merged,
-      prLink: submission.prLink ?? undefined,
-      notes: submission.notes ?? undefined,
-    };
-
-    // Step: Hindsight RETAIN - store the confirmed outcome
-    try {
-      const service = getHindsightService();
-      await service.retainInvestigation(submission.incidentId, {
-        incidentId: submission.incidentId,
-        testName: incident.parsedFailure.testName,
-        errorMessage: incident.parsedFailure.errorMessage,
-        failureSignature: incident.parsedFailure.failureSignature,
-        environment: incident.parsedFailure.environment,
-        attemptedFix: submission.fixDescription,
-        outcome: submission.status,
-        ciResult: submission.ciResult,
-        merged: submission.merged,
-        prLink: submission.prLink ?? undefined,
-        notes: submission.notes ?? undefined,
-        timestamp: new Date().toISOString(),
-      });
-    } catch (err: any) {
-      // If Hindsight retain fails, we still return success locally but warn
-      console.warn('Hindsight retain warning:', err.message);
-    }
-
-    incidents.set(submission.incidentId, incident);
-
-    res.status(200).json({
-      success: true,
-      status: submission.status,
-    });
   }
 );
