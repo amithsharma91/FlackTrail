@@ -16,7 +16,7 @@ export function redactSecrets(text: string): string {
   redacted = redacted.replace(/Authorization:\s*\S+/gi, 'Authorization: [REDACTED]');
 
   // Redact API keys (sk-, API_KEY=, etc.)
-  redacted = redacted.replace(/sk-[A-Za-z0-9]{20,}/g, '[REDACTED_API_KEY]');
+  redacted = redacted.replace(/sk-[A-Za-z0-9-]{20,}/g, '[REDACTED_API_KEY]');
   redacted = redacted.replace(/(API_KEY\s*[:=]\s*)\S+/gi, '$1[REDACTED]');
   redacted = redacted.replace(/(token\s*[:=]\s*)\S+/gi, '$1[REDACTED]');
   redacted = redacted.replace(/(access_token\s*[:=]\s*)\S+/gi, '$1[REDACTED]');

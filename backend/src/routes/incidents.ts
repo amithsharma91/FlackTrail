@@ -13,7 +13,7 @@ const router = Router();
 let hindsightService: HindsightMemoryService | null = null;
 
 function getHindsightService(): HindsightMemoryService | null {
-  if (hindsightService !== undefined) {
+  if (hindsightService !== null) {
     return hindsightService;
   }
   if (!config.hindsightApiKey || !config.hindsightBankId) {

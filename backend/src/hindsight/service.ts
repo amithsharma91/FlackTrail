@@ -13,9 +13,24 @@ import {
   ReflectPermission,
 } from '../shared/index';
 import { redactSecrets } from '../parser';
-import { UsageTracker } from '../usage';
+import { UsageTracker, UsagePersistence } from '../usage';
 
 const MAX_RECALL_RESULTS = 5;
+
+/**
+ * Persistence adapter for the retention ledger. Implementations (e.g. SQLite via
+ * Subagent 3's persistence layer) must provide isRetentionRecorded /
+ * recordRetention so that duplicate-retention protection survives backend
+ * restarts. This is the contract Subagent 3's SQLite layer should implement.
+ */
+export interface HindsightPersistence {
+  /** Returns true if a retention ledger entry already exists for the given key. */
+  isRetentionRecorded(key: string): Promise<boolean>;
+  /** Marks the given key as retained in the persistent ledger. */
+  recordRetention(key: string): Promise<void>;
+  /** Clears the entire retention ledger. */
+  clearRetentionLedger(): Promise<void>;
+}
 
 export interface HindsightService {
   recallSimilar(
@@ -39,9 +54,16 @@ export class HindsightMemoryService implements HindsightService {
   private bankId: string;
   private client: HindsightClient;
   private usageTracker: UsageTracker;
-  private retainedSignatures: Set<string>; // duplicate-retention protection
+  private retainedSignatures: Set<string>; // duplicate-retention protection (in-memory cache)
+  private persistence?: HindsightPersistence;
 
-  constructor(bankId: string, apiKey: string, apiUrl: string) {
+  constructor(
+    bankId: string,
+    apiKey: string,
+    apiUrl: string,
+    persistence?: HindsightPersistence,
+    usagePersistence?: UsagePersistence
+  ) {
     if (!bankId || bankId === 'default') {
       throw new Error('HINDSIGHT_BANK_ID must be set and must not be "default"');
     }
@@ -50,7 +72,14 @@ export class HindsightMemoryService implements HindsightService {
       baseUrl: apiUrl,
       apiKey,
     });
-    this.usageTracker = new UsageTracker();
+    this.usageTracker = new UsageTracker(
+      {
+        monthlyBudgetUsd: 4.75,
+        reflectCallLimit: 10,
+      },
+      usagePersistence
+    );
+    this.persistence = persistence;
     this.retainedSignatures = new Set();
   }
 
@@ -59,7 +88,10 @@ export class HindsightMemoryService implements HindsightService {
    * Secrets are redacted before content is sent to Hindsight.
    *
    * Duplicate-retention protection: skips retention if the same
-   * incidentId + failureSignature combination was already retained.
+   * incidentId + failureSignature combination was already retained, checking
+   * both the in-memory cache and the persistent retention ledger.
+   *
+   * Errors from the SDK are never swallowed — they are recorded and re-thrown.
    */
   async retainInvestigation(
     incidentId: string,
@@ -95,10 +127,16 @@ export class HindsightMemoryService implements HindsightService {
       );
     }
 
-    // Duplicate-retention protection: skip if same incident+signature already retained
+    // Duplicate-retention protection: skip if same incident+signature already retained.
+    // Check in-memory cache first (fast), then persistent ledger.
     const dedupeKey = `${incidentId}:${data.failureSignature}`;
     if (this.retainedSignatures.has(dedupeKey)) {
       // Already retained; skip silently to avoid duplicate Cloud charges
+      return;
+    }
+    if (this.persistence && (await this.persistence.isRetentionRecorded(dedupeKey))) {
+      // Persisted from a previous session; sync into in-memory cache and skip
+      this.retainedSignatures.add(dedupeKey);
       return;
     }
 
@@ -162,13 +200,18 @@ export class HindsightMemoryService implements HindsightService {
         );
       }
 
-      // Mark as retained to prevent duplicates
+      // Mark as retained to prevent duplicates — in-memory cache AND persistent ledger
       this.retainedSignatures.add(dedupeKey);
+      if (this.persistence) {
+        await this.persistence.recordRetention(dedupeKey);
+      }
 
-      // Track usage (measured token count not returned by SDK, so estimate)
-      this.usageTracker.recordRetain(undefined, true);
+      // Track usage with estimated token count (SDK does not return measured tokens)
+      this.usageTracker.recordRetain(estimatedTokenCount, true);
     } catch (err: any) {
-      this.usageTracker.recordRetain(undefined, false, err.message);
+      // Record the failed attempt for cost/error tracking, then propagate the error.
+      // Never silently claim retention succeeded.
+      this.usageTracker.recordRetain(estimatedTokenCount, false, err.message);
       throw new Error(
         `Hindsight retain failed: ${err.message || String(err)}`
       );
@@ -241,6 +284,8 @@ export class HindsightMemoryService implements HindsightService {
   /**
    * RECALL wrapper used by the API route that tracks usage regardless of outcome.
    * This is the public entry point used by analyze.ts.
+   *
+   * Normal analysis performs ONE RECALL with max 5 memories and NO REFLECT.
    */
   async recallSimilarTracked(
     failureSignature: string,
@@ -248,7 +293,10 @@ export class HindsightMemoryService implements HindsightService {
   ): Promise<HistoricalInvestigation[]> {
     try {
       const results = await this.recallSimilar(failureSignature, tags);
-      this.usageTracker.recordRecall(undefined, true);
+      // Estimate tokens for the recall query (~4 chars per token).
+      // The SDK does not return measured token counts for recall.
+      const estimatedTokenCount = Math.ceil(failureSignature.length / 4);
+      this.usageTracker.recordRecall(estimatedTokenCount, true);
       return results;
     } catch (err: any) {
       throw err;
@@ -311,5 +359,23 @@ export class HindsightMemoryService implements HindsightService {
   resetUsageTracker(): void {
     this.usageTracker.reset();
     this.retainedSignatures.clear();
+    if (this.persistence) {
+      this.persistence.clearRetentionLedger().catch(() => {
+        // Persistence clear failure is non-fatal.
+      });
+    }
+  }
+
+  /**
+   * Clear the in-memory duplicate-retention cache and, if configured, the
+   * persistent retention ledger. This is a separate concern from usage reset.
+   */
+  clearRetentionLedger(): void {
+    this.retainedSignatures.clear();
+    if (this.persistence) {
+      this.persistence.clearRetentionLedger().catch(() => {
+        // Persistence clear failure is non-fatal; in-memory cache is cleared.
+      });
+    }
   }
 }

@@ -4,6 +4,10 @@
  * Tracks RETAIN, RECALL, and REFLECT operations locally for cost estimation.
  * This is NOT authoritative billing - it is a local estimate only.
  * Actual billing is determined by Hindsight Cloud.
+ *
+ * Persistence: an optional `UsagePersistence` adapter can be supplied so that
+ * usage records survive backend restarts. Records are loaded asynchronously on
+ * construction and each new record is saved to the persistence layer.
  */
 
 import {
@@ -20,6 +24,17 @@ export interface UsageRecord {
   estimatedCost: number; // local estimate
   success: boolean;
   error?: string;
+}
+
+/**
+ * Persistence adapter for usage records. Implementations (e.g. SQLite via
+ * Subagent 3's persistence layer) must provide load/save/clear so that usage
+ * counters and REFLECT limits survive backend restarts.
+ */
+export interface UsagePersistence {
+  loadRecords(): Promise<UsageRecord[]>;
+  saveRecord(record: UsageRecord): Promise<void>;
+  clearRecords(): Promise<void>;
 }
 
 export interface UsageSnapshot {
@@ -49,53 +64,89 @@ export const DEFAULT_USAGE_CONFIG: UsageTrackerConfig = {
 export class UsageTracker {
   private records: UsageRecord[] = [];
   private config: UsageTrackerConfig;
+  private persistence?: UsagePersistence;
 
-  constructor(config: Partial<UsageTrackerConfig> = {}) {
+  constructor(
+    config: Partial<UsageTrackerConfig> = {},
+    persistence?: UsagePersistence
+  ) {
     this.config = {
       monthlyBudgetUsd: DEFAULT_USAGE_CONFIG.monthlyBudgetUsd,
       reflectCallLimit: DEFAULT_USAGE_CONFIG.reflectCallLimit,
       ...config,
     };
+    this.persistence = persistence;
+    // Load historical records from persistence if available.
+    // This is async; records may not be immediately available after construction.
+    if (this.persistence) {
+      this.persistence
+        .loadRecords()
+        .then((loaded) => {
+          this.records = loaded;
+        })
+        .catch(() => {
+          // Persistence load failure is non-fatal; start with empty records.
+          this.records = [];
+        });
+    }
   }
 
   recordRetain(tokenCount?: number, success = true, error?: string): void {
     const estimatedCost = tokenCount
       ? estimateRetainCost(tokenCount)
       : estimateRetainCost(0); // fallback: 0 tokens = $0 estimate
-    this.records.push({
+    const record: UsageRecord = {
       operation: 'retain',
       timestamp: new Date().toISOString(),
       tokenCount,
       estimatedCost,
       success,
       error,
-    });
+    };
+    this.records.push(record);
+    if (this.persistence) {
+      this.persistence.saveRecord(record).catch(() => {
+        // Persistence save failure is non-fatal; record is still tracked in memory.
+      });
+    }
   }
 
   recordRecall(tokenCount?: number, success = true, error?: string): void {
     const estimatedCost = tokenCount
       ? estimateRecallCost(tokenCount)
       : estimateRecallCost(0);
-    this.records.push({
+    const record: UsageRecord = {
       operation: 'recall',
       timestamp: new Date().toISOString(),
       tokenCount,
       estimatedCost,
       success,
       error,
-    });
+    };
+    this.records.push(record);
+    if (this.persistence) {
+      this.persistence.saveRecord(record).catch(() => {
+        // Persistence save failure is non-fatal; record is still tracked in memory.
+      });
+    }
   }
 
   recordReflect(tokenCount?: number, success = true, error?: string): void {
     const estimatedCost = estimateReflectCost();
-    this.records.push({
+    const record: UsageRecord = {
       operation: 'reflect',
       timestamp: new Date().toISOString(),
       tokenCount,
       estimatedCost,
       success,
       error,
-    });
+    };
+    this.records.push(record);
+    if (this.persistence) {
+      this.persistence.saveRecord(record).catch(() => {
+        // Persistence save failure is non-fatal; record is still tracked in memory.
+      });
+    }
   }
 
   getSnapshot(): UsageSnapshot {
@@ -192,5 +243,10 @@ export class UsageTracker {
 
   reset(): void {
     this.records = [];
+    if (this.persistence) {
+      this.persistence.clearRecords().catch(() => {
+        // Persistence clear failure is non-fatal; in-memory records are cleared.
+      });
+    }
   }
 }

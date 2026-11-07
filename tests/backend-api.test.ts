@@ -1,0 +1,267 @@
+import { describe, test, expect, beforeEach, beforeAll, afterAll, vi } from 'vitest';
+import { createServer } from 'http';
+import { AddressInfo } from 'net';
+
+// --- Mock the Hindsight service module (relative path resolves correctly) ---
+vi.mock('../backend/src/hindsight/service', () => {
+  const mockService = {
+    recallSimilarTracked: vi.fn().mockResolvedValue([]),
+    retainInvestigation: vi.fn().mockResolvedValue(undefined),
+    reflectOnInvestigation: vi.fn().mockResolvedValue({ text: 'reflect answer', based_on: [] }),
+    canPerformReflect: vi.fn().mockReturnValue({ allowed: true }),
+    getUsageSnapshot: vi.fn().mockReturnValue({
+      retainCount: 0, recallCount: 0, reflectCount: 0, totalEstimatedCost: 0,
+      totalEstimatedRetainCost: 0, totalEstimatedRecallCost: 0, totalEstimatedReflectCost: 0,
+      errors: 0, measuredTokenCount: 0, estimatedTokenCount: 0,
+    }),
+    getBudgetStatus: vi.fn().mockReturnValue({
+      budgetUsd: 4.75, spentUsd: 0, remainingUsd: 4.75, percentUsed: 0,
+      warningLevel: 'none', blocked: false,
+    }),
+    resetUsageTracker: vi.fn(),
+  };
+  return {
+    HindsightMemoryService: vi.fn(() => mockService),
+    __mockService: mockService,
+  };
+});
+
+import { app } from '../backend/src/index';
+import { incidents } from '../backend/src/store/incidents';
+import { __mockService } from '../backend/src/hindsight/service';
+import { config } from '../backend/src/config/env';
+
+let server: ReturnType<typeof createServer>;
+let baseUrl: string;
+
+beforeAll(async () => {
+  // Set Hindsight env vars so getHindsightService() creates a real instance
+  process.env.HINDSIGHT_API_KEY = 'test-hindsight-key';
+  process.env.HINDSIGHT_BANK_ID = 'test-bank';
+  process.env.HINDSIGHT_API_URL = 'https://api.hindsight.vectorize.io';
+  // Update config object since it was created at import time
+  config.hindsightApiKey = process.env.HINDSIGHT_API_KEY;
+  config.hindsightBankId = process.env.HINDSIGHT_BANK_ID;
+  config.hindsightApiUrl = process.env.HINDSIGHT_API_URL;
+
+  server = createServer(app);
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const addr = server.address() as AddressInfo;
+  baseUrl = `http://127.0.0.1:${addr.port}`;
+});
+
+afterAll(async () => {
+  await new Promise<void>((resolve) => server.close(resolve as any));
+});
+
+beforeEach(() => {
+  incidents.clear();
+  __mockService.recallSimilarTracked.mockReset().mockResolvedValue([]);
+  __mockService.retainInvestigation.mockReset().mockResolvedValue(undefined);
+  __mockService.reflectOnInvestigation.mockReset().mockResolvedValue({ text: 'reflect answer', based_on: [] });
+  __mockService.canPerformReflect.mockReset().mockReturnValue({ allowed: true });
+});
+
+const post = async (path: string, body: unknown) => {
+  const res = await fetch(`${baseUrl}${path}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  return { status: res.status, json: await res.json().catch(() => ({})) };
+};
+
+const get = async (path: string) => {
+  const res = await fetch(`${baseUrl}${path}`);
+  return { status: res.status, json: await res.json().catch(() => ({})) };
+};
+
+const validLog = `FAILED payments/service_test.py::test_payment_retry - Error: timeout after 30s waiting for payment gateway mock
+  File "payments/mock_gateway.py", line 42, in wait_for_response
+    raise TimeoutError("timeout after 30s waiting for payment gateway mock")
+API_KEY=sk-live-abcdef1234567890`;
+
+describe('Backend API - POST /api/analyze', () => {
+  test('successful analysis: parses log, recalls history, returns incident; RECALL invoked, REFLECT not', async () => {
+    __mockService.recallSimilarTracked.mockResolvedValueOnce([
+      {
+        id: 'mem-1', testName: 'test_payment_retry',
+        errorMessage: 'previous timeout', failureSignature: 'sig-x',
+        status: 'verified', attemptedFix: 'Reset mock state between tests',
+        timestamp: '2026-11-02T00:00:00Z', source: 'mem-1',
+      },
+    ]);
+
+    const { status, json } = await post('/api/analyze', { logText: validLog });
+
+    expect(status).toBe(200);
+    expect(json.incidentId).toBeDefined();
+    expect(String(json.incidentId)).toMatch(/^inc-/);
+    expect(json.parsedFailure.testName).toBe('test_payment_retry');
+    expect(json.parsedFailure.errorMessage).toContain('timeout after 30s');
+    expect(json.parsedFailure.failureSignature).toBeDefined();
+    // Secrets redacted before any Hindsight/LLM call: not present in parsed output.
+    expect(JSON.stringify(json.parsedFailure)).not.toContain('sk-live-abcdef1234567890');
+    // Normal analysis invokes RECALL...
+    expect(__mockService.recallSimilarTracked).toHaveBeenCalled();
+    // ...but never REFLECT (explicit only).
+    expect(__mockService.reflectOnInvestigation).not.toHaveBeenCalled();
+    expect(json.aiAnalysis).toBeDefined();
+    expect(json.aiAnalysis.recommendedSteps.length).toBeGreaterThan(0);
+    expect(Array.isArray(json.historicalInvestigations)).toBe(true);
+  });
+
+  test('at most five memories are passed to reasoning (safety cap)', async () => {
+    const manyResults = Array.from({ length: 10 }, (_, i) => ({
+      id: `mem-${i}`, testName: 'test_payment_retry',
+      errorMessage: `historical memory ${i}`, failureSignature: 'sig-x',
+      status: 'failed', timestamp: '2026-11-01T00:00:00Z', source: `mem-${i}`,
+    }));
+    __mockService.recallSimilarTracked.mockResolvedValue(manyResults);
+
+    const { status, json } = await post('/api/analyze', { logText: validLog });
+    expect(status).toBe(200);
+    expect(json.historicalInvestigations.length).toBeLessThanOrEqual(5);
+  });
+
+  test('whitespace-only log text returns 400 (invalid request / parse failure)', async () => {
+    const { status, json } = await post('/api/analyze', { logText: '   ' });
+    expect(status).toBe(400);
+    expect(json.error).toBeDefined();
+  });
+
+  test('missing request body returns a safe error response (no internals leaked)', async () => {
+    const res = await fetch(`${baseUrl}/api/analyze`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    const json = await res.json();
+    expect(res.status).not.toBe(200);
+    expect(json).toHaveProperty('error');
+    expect(json).toHaveProperty('status');
+    expect(json).toHaveProperty('timestamp');
+    expect(json.error).not.toContain('ZodError');
+    expect(json.error).not.toContain('at ');
+    expect(res.headers.get('content-type')?.includes('application/json')).toBe(true);
+  });
+
+  test('hindsight recall failure is not fatal: analysis still succeeds with empty history', async () => {
+    __mockService.recallSimilarTracked.mockRejectedValue(new Error('Hindsight connection failed'));
+
+    const { status, json } = await post('/api/analyze', { logText: validLog });
+    expect(status).toBe(200);
+    expect(json.incidentId).toBeDefined();
+    expect(json.historicalInvestigations).toEqual([]);
+    expect(json.aiAnalysis).toBeDefined();
+    expect(__mockService.recallSimilarTracked).toHaveBeenCalled();
+  });
+
+  test('secrets are not leaked in API responses', async () => {
+    const secretLog = `FAILED test_leak - Error: boom Authorization: Bearer ghp_abcdef1234567890`;
+    const { status, json } = await post('/api/analyze', { logText: secretLog });
+    expect(status).toBe(200);
+    const payload = JSON.stringify(json);
+    expect(payload).not.toContain('ghp_abcdef1234567890');
+  });
+});
+
+describe('Backend API - Incident CRUD', () => {
+  let incidentId: string;
+
+  beforeEach(async () => {
+    const { json } = await post('/api/analyze', { logText: validLog });
+    incidentId = json.incidentId;
+  });
+
+  test('GET /api/incidents/:id returns the incident detail', async () => {
+    const { status, json } = await get(`/api/incidents/${incidentId}`);
+    expect(status).toBe(200);
+    expect(json.id).toBe(incidentId);
+    expect(json.parsedFailure.testName).toBe('test_payment_retry');
+    expect(json.status).toBe('proposed');
+  });
+
+  test('GET /api/incidents/:id for missing incident returns 404', async () => {
+    const { status, json } = await get('/api/incidents/inc-does-not-exist');
+    expect(status).toBe(404);
+    expect(json.error).toBe('Incident not found');
+  });
+
+  test('GET /api/incidents lists all incidents', async () => {
+    const { status, json } = await get('/api/incidents');
+    expect(status).toBe(200);
+    expect(Array.isArray(json.incidents)).toBe(true);
+    expect(json.incidents.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
+describe('Backend API - POST /api/incidents/:id/resolve', () => {
+  let incidentId: string;
+
+  beforeEach(async () => {
+    const { json } = await post('/api/analyze', { logText: validLog });
+    incidentId = json.incidentId;
+  });
+
+  test('successful outcome submission records status and invokes RETAIN', async () => {
+    const { status, json } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'verified',
+      ciResult: 'passed',
+      merged: true,
+      fixDescription: 'Reset mock state between tests',
+      prLink: 'https://github.com/example/pr/1',
+    });
+    expect(status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(json.status).toBe('verified');
+    // RETAIN is invoked for confirmed outcomes.
+    expect(__mockService.retainInvestigation).toHaveBeenCalled();
+    const retainCall = __mockService.retainInvestigation.mock.calls[0];
+    expect(retainCall[0]).toBe(incidentId);
+    expect(retainCall[1].outcome).toBe('verified');
+    expect(retainCall[1].testName).toBe('test_payment_retry');
+  });
+
+  test('verified status requires ciResult=passed AND merged=true (invalid verified status)', async () => {
+    const { status } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'verified', ciResult: 'failed', merged: true,
+    });
+    expect(status).toBe(400);
+
+    const { status: s2 } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'verified', ciResult: 'passed', merged: false,
+    });
+    expect(s2).toBe(400);
+  });
+
+  test('failed and passed_unmerged outcomes are accepted', async () => {
+    const { status: s1 } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'failed', ciResult: 'failed', merged: false,
+    });
+    expect(s1).toBe(200);
+
+    const { status: s2 } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'passed_unmerged', ciResult: 'passed', merged: false,
+    });
+    expect(s2).toBe(200);
+  });
+
+  test('resolve on missing incident returns 404', async () => {
+    const { status } = await post('/api/incidents/inc-missing/resolve', {
+      status: 'failed',
+    });
+    expect(status).toBe(404);
+  });
+
+  test('hindsight retain failure does not fail the outcome submission locally', async () => {
+    __mockService.retainInvestigation.mockRejectedValue(new Error('retain failed'));
+
+    const { status, json } = await post(`/api/incidents/${incidentId}/resolve`, {
+      status: 'failed', ciResult: 'failed',
+    });
+    expect(status).toBe(200);
+    expect(json.success).toBe(true);
+    expect(json.status).toBe('failed');
+  });
+});

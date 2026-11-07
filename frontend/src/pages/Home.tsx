@@ -1,23 +1,19 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Upload, FileText, AlertTriangle, Loader2 } from 'lucide-react';
+import { Zap, FileText } from 'lucide-react';
 import { api } from '../services/api';
-import { IncidentStatus } from '../../../shared/src/index';
+import UploadZone from '../components/UploadZone';
+import ErrorAlert from '../components/ErrorAlert';
+import Spinner from '../components/Spinner';
 
 export default function Home() {
-  const [logText, setLogText] = useState('');
+  const navigate = useNavigate();
+  const [text, setText] = useState('');
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const navigate = useNavigate();
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setFile(e.target.files[0]);
-      setError(null);
-    }
-  };
+  const hasInput = text.trim().length > 0 || file !== null;
 
   const handleAnalyze = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -25,15 +21,14 @@ export default function Home() {
     setLoading(true);
 
     try {
-      let textToAnalyze = logText;
+      let textToAnalyze = text;
 
-      if (file && !logText) {
-        const content = await file.text();
-        textToAnalyze = content;
+      if (file && !text) {
+        textToAnalyze = await file.text();
       }
 
       if (!textToAnalyze || textToAnalyze.trim().length === 0) {
-        setError('Please paste CI log text or upload a log file.');
+        setError('Please paste CI log text or upload a .log/.txt file before analyzing.');
         setLoading(false);
         return;
       }
@@ -41,6 +36,7 @@ export default function Home() {
       const response = await api.analyze(textToAnalyze, file?.name);
       navigate(`/investigate/${response.incidentId}`);
     } catch (err: any) {
+      // Never log raw log text or secrets to the console.
       setError(
         err.response?.data?.error || err.message || 'Analysis failed. Please try again.'
       );
@@ -49,89 +45,69 @@ export default function Home() {
   };
 
   return (
-    <div className="max-w-2xl mx-auto py-8 px-4">
-      <div className="text-center mb-12">
-        <h1 className="text-3xl font-bold text-gray-900 mb-2">
-          FlakeTrail
-        </h1>
-        <p className="text-gray-600">
-          Remember CI failures. Fix faster.
-        </p>
-      </div>
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="border-b border-gray-200 bg-white sticky top-0 z-20">
+        <div className="max-w-4xl mx-auto px-4 py-3 flex items-center gap-3">
+          <div className="w-8 h-8 rounded-lg bg-blue-600 flex items-center justify-center text-white shadow-md shadow-blue-200">
+            <FileText className="w-5 h-5" />
+          </div>
+          <div>
+            <h1 className="text-xl font-bold tracking-tight">FlakeTrail<span className="text-blue-600">.</span>ai</h1>
+            <p className="text-xs text-gray-500">Remember CI failures. Fix faster.</p>
+          </div>
+          <div className="ml-auto flex items-center gap-2 px-3 py-1 rounded-full border border-gray-200 bg-white text-xs text-gray-600">
+            <Zap className="w-3 h-3 mr-1" aria-hidden="true" />
+            Analyze CI logs
+          </div>
+        </div>
+      </header>
 
-      <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6">
+      <main className="max-w-3xl mx-auto py-10 px-4">
+        <div className="text-center mb-10">
+          <h2 className="text-2xl font-bold text-gray-900 mb-3">Submit a CI failure log</h2>
+          <p className="text-gray-600 max-w-xl mx-auto">
+            Paste your CI failure log or upload a <span className="font-mono">.log</span> /
+            <span className="font-mono">.txt</span> file. FlakeTrail parses the failure, recalls similar
+            historical investigations, and returns AI-powered recommendations.
+          </p>
+        </div>
+
         <form onSubmit={handleAnalyze} className="space-y-6">
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              CI failure log
-            </label>
-            <textarea
-              className="w-full h-64 rounded-lg border border-gray-300 p-4 font-mono text-sm focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              placeholder="Paste your CI failure log here..."
-              value={logText}
-              onChange={(e) => {
-                setLogText(e.target.value);
-                setFile(null);
-                setError(null);
-              }}
-            />
-            <p className="mt-2 text-xs text-gray-500">
-              Supports .log and .txt files, or paste log text directly.
-            </p>
-          </div>
-
-          <div>
-            <label className="block text-sm font-medium text-gray-700 mb-2">
-              Or upload a log file
-            </label>
-            <input
-              type="file"
-              accept=".log,.txt"
-              className="w-full rounded-lg border border-gray-300 p-4 focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none"
-              onChange={handleFileChange}
-            />
-            {file && (
-              <p className="mt-2 text-xs text-gray-500">
-                {file.name} ({file.size} bytes)
-              </p>
-            )}
-          </div>
+          <UploadZone
+            text={text}
+            file={file}
+            onTextChange={setText}
+            onFileChange={setFile}
+            disabled={loading}
+          />
 
           {error && (
-            <div className="rounded-lg border border-red-200 bg-red-50 p-4">
-              <div className="flex">
-                <AlertTriangle className="w-5 h-5 text-red-600 mr-2" />
-                <span className="text-sm text-red-700">{error}</span>
-              </div>
-            </div>
+            <ErrorAlert message={error} onDismiss={() => setError(null)} />
           )}
 
           <button
             type="submit"
-            disabled={loading || (!logText && !file)}
-            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+            disabled={loading || !hasInput}
+            className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 disabled:hover:bg-gray-300 text-white font-semibold py-3.5 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
           >
             {loading ? (
               <>
-                <Loader2 className="w-5 h-5 animate-spin" />
-                Analyzing...
+                <Spinner size="sm" label="Analyzing" className="text-white" />
+                Analyzing…
               </>
             ) : (
               <>
-                <FileText className="w-5 h-5" />
+                <Zap className="w-5 h-5" aria-hidden="true" />
                 Analyze failure
               </>
             )}
           </button>
-        </form>
-      </div>
 
-      <div className="mt-8 text-center text-sm text-gray-500">
-        <p>
-          FlakeTrail remembers past CI investigations so you can reuse historical
-          knowledge when similar failures happen again.
-        </p>
-      </div>
+          <p className="text-xs text-gray-500">
+            Logs are sent to your backend only. Secrets are redacted before any AI or Hindsight call — nothing is logged in the browser.
+          </p>
+        </form>
+      </main>
     </div>
   );
 }

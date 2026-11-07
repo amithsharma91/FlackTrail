@@ -76,3 +76,38 @@ describe('Secret Redaction', () => {
     expect(result).toContain('payments/mock_gateway.py');
   });
 });
+
+describe('CI Parser - Edge Cases', () => {
+  test('handles malformed CI log without throwing', () => {
+    const log = 'random garbage output that is not a real CI failure';
+    const result = parseCILog(log);
+    expect(result.testName).toBeDefined();
+    expect(result.failureSignature).toBeDefined();
+    expect(result.failureSignature.length).toBeGreaterThan(0);
+  });
+
+  test('handles log with missing stack trace', () => {
+    const log = 'FAILED test_suite::test_login - Error: invalid credentials';
+    const result = parseCILog(log);
+    expect(result.testName).toBe('test_login');
+    expect(result.errorMessage).toContain('invalid credentials');
+    expect(result.stackTrace).toBeUndefined();
+    expect(result.failureSignature).toBeDefined();
+  });
+
+  test('handles large log without errors and truncates error message', () => {
+    const noisyLine = 'x'.repeat(2000);
+    const log = `FAILED test_suite::test_big - Error: real timeout issue\n${noisyLine}\n${noisyLine}\n`;
+    const result = parseCILog(log);
+    expect(result.testName).toBe('test_big');
+    expect(result.errorMessage.length).toBeLessThanOrEqual(500);
+    expect(result.failureSignature).toBeDefined();
+    expect(result.rawLogExcerpt.length).toBeLessThanOrEqual(2000);
+  });
+
+  test('failure signature is stable across whitespace-only differences', () => {
+    const log1 = 'FAILED test_payment_retry - Error: timeout after 30s';
+    const log2 = 'FAILED test_payment_retry  -  Error: timeout after 30s';
+    expect(parseCILog(log1).failureSignature).toBe(parseCILog(log2).failureSignature);
+  });
+});
