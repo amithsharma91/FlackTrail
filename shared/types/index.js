@@ -1,0 +1,2 @@
+// FlakeTrail shared types
+export {};
