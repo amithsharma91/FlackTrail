@@ -6,30 +6,34 @@ import {
 } from '../shared/index';
 import { HindsightMemoryService } from '../hindsight/service';
 import { config } from '../config/env';
-import { incidents } from '../store/incidents';
+import {
+  createIncident,
+  getIncidentById,
+  listAllIncidents,
+  updateIncident,
+} from '../store/incidents';
+import { AppError } from '../middleware/errorHandler';
 
 const router = Router();
 
 let hindsightService: HindsightMemoryService | null = null;
 
-function getHindsightService(): HindsightMemoryService | null {
-  if (hindsightService !== null) {
-    return hindsightService;
+export function setHindsightService(service: HindsightMemoryService): void {
+  hindsightService = service;
+}
+
+function getHindsightService(): HindsightMemoryService {
+  if (!hindsightService) {
+    throw new AppError(
+      'Hindsight not initialized. Call initializeApp() first.',
+      500
+    );
   }
-  if (!config.hindsightApiKey || !config.hindsightBankId) {
-    hindsightService = null;
-    return null;
-  }
-  hindsightService = new HindsightMemoryService(
-    config.hindsightBankId,
-    config.hindsightApiKey,
-    config.hindsightApiUrl
-  );
   return hindsightService;
 }
 
 router.get('/', async (_req: Request, res: Response): Promise<void> => {
-  const incidentList = Array.from(incidents.values()).map((inc: any) => ({
+  const incidentList = listAllIncidents().map((inc: any) => ({
     id: inc.id,
     testName: inc.parsedFailure.testName,
     errorMessage: inc.parsedFailure.errorMessage,
@@ -46,7 +50,7 @@ router.get('/', async (_req: Request, res: Response): Promise<void> => {
 });
 
 router.get('/:id', async (req: Request, res: Response): Promise<void> => {
-  const incident = incidents.get(req.params.id);
+  const incident = getIncidentById(req.params.id);
   if (!incident) {
     res.status(404).json({ error: 'Incident not found', status: 404 });
     return;
@@ -55,7 +59,7 @@ router.get('/:id', async (req: Request, res: Response): Promise<void> => {
 });
 
 router.post('/:id/resolve', async (req: Request, res: Response): Promise<void> => {
-  const incident = incidents.get(req.params.id);
+  const incident = getIncidentById(req.params.id);
   if (!incident) {
     res.status(404).json({ error: 'Incident not found', status: 404 });
     return;
@@ -107,7 +111,10 @@ router.post('/:id/resolve', async (req: Request, res: Response): Promise<void> =
     }
   }
 
-  incidents.set(submission.incidentId, incident);
+  updateIncident(submission.incidentId, {
+    status: submission.status,
+    outcome: incident.outcome,
+  });
 
   res.status(200).json({
     success: true,

@@ -8,6 +8,7 @@ describe('Hindsight Memory Service', () => {
       'invalid-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
     await expect(
       service.recallSimilar('sig-001')
     ).rejects.toThrow('Hindsight recall failed');
@@ -19,6 +20,7 @@ describe('Hindsight Memory Service', () => {
       'invalid-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
     await expect(
       service.retainInvestigation('inc-1', {
         incidentId: 'inc-1',
@@ -57,6 +59,7 @@ describe('Hindsight Memory Service', () => {
       'invalid-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
 
     const data = {
       incidentId: 'inc-dup',
@@ -69,27 +72,26 @@ describe('Hindsight Memory Service', () => {
       timestamp: '2026-11-01T00:00:00Z',
     };
 
-    // First retain will fail (invalid key) but marks the signature
+    // First retain will fail (invalid key) but the dedupe tracking happens
+    // only after a successful SDK call. With an invalid key, no signature
+    // is recorded, so a second call will attempt again.
+    // This test verifies the service handles the error path gracefully.
     try {
       await service.retainInvestigation('inc-dup', data);
     } catch {
       // Expected to fail due to invalid key
     }
 
-    // Second retain with same incident+signature should be skipped (no API call)
-    // Since the first call failed, the signature was NOT added to retainedSignatures
-    // So we need to test differently: after a successful retain, duplicate should be skipped
-    // Since we can't succeed with invalid key, we test the dedupe logic differently
-    // by verifying the retainedSignatures set behavior indirectly through the service
     expect(service).toBeDefined();
   });
 
-  test('usage tracker records retain, recall, and reflect operations', () => {
+  test('usage tracker records retain, recall, and reflect operations', async () => {
     const service = new HindsightMemoryService(
       'test-bank',
       'test-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
 
     const snapshot = service.getUsageSnapshot();
     expect(snapshot.retainCount).toBe(0);
@@ -97,23 +99,25 @@ describe('Hindsight Memory Service', () => {
     expect(snapshot.reflectCount).toBe(0);
   });
 
-  test('canPerformReflect returns allowed when under limits', () => {
+  test('canPerformReflect returns allowed when under limits', async () => {
     const service = new HindsightMemoryService(
       'test-bank',
       'test-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
 
     const permission = service.canPerformReflect();
     expect(permission.allowed).toBe(true);
   });
 
-  test('budget status returns expected fields', () => {
+  test('budget status returns expected fields', async () => {
     const service = new HindsightMemoryService(
       'test-bank',
       'test-key',
       'https://api.hindsight.vectorize.io'
     );
+    await service.init();
 
     const budget = service.getBudgetStatus();
     expect(budget).toHaveProperty('budgetUsd');

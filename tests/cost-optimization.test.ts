@@ -5,8 +5,9 @@ import { validateOutcomeStatus } from '../backend/src/shared';
 import { redactSecrets } from '../backend/src/parser';
 
 describe('Usage Tracker', () => {
-  test('records retain, recall, and reflect operations', () => {
+  test('records retain, recall, and reflect operations', async () => {
     const tracker = new UsageTracker();
+    await tracker.init();
 
     tracker.recordRetain(1000, true);
     tracker.recordRecall(500, true);
@@ -19,18 +20,19 @@ describe('Usage Tracker', () => {
     expect(snapshot.totalEstimatedCost).toBeGreaterThan(0);
   });
 
-  test('budget status warns at 50%, 75%, 90%', () => {
+  test('budget status warns at 50%, 75%, 90%', async () => {
     const tracker = new UsageTracker({ monthlyBudgetUsd: 10.0 });
+    await tracker.init();
 
-    // Simulate spending $5 (50% of $10)
-    tracker.recordRetain(666666, true); // ~$6.66 retain cost
+    tracker.recordRetain(666666, true);
     const budget = tracker.getBudgetStatus();
     expect(budget.warningLevel).toBe('50%');
     expect(budget.percentUsed).toBeGreaterThanOrEqual(50);
   });
 
-  test('blocks reflect when call limit reached', () => {
+  test('blocks reflect when call limit reached', async () => {
     const tracker = new UsageTracker({ reflectCallLimit: 2 });
+    await tracker.init();
 
     tracker.recordReflect(undefined, true);
     tracker.recordReflect(undefined, true);
@@ -40,17 +42,18 @@ describe('Usage Tracker', () => {
     expect(permission.reason).toContain('call limit');
   });
 
-  test('blocks reflect when budget exhausted', () => {
+  test('blocks reflect when budget exhausted', async () => {
     const tracker = new UsageTracker({ monthlyBudgetUsd: 0.01, reflectCallLimit: 100 });
+    await tracker.init();
 
-    // Spend more than budget
-    tracker.recordRetain(100000000, true); // ~$1000 retain cost
+    tracker.recordRetain(100000000, true);
     const permission = tracker.canPerformReflect();
     expect(permission.allowed).toBe(false);
   });
 
-  test('tracks errors separately', () => {
+  test('tracks errors separately', async () => {
     const tracker = new UsageTracker();
+    await tracker.init();
 
     tracker.recordRetain(undefined, false, 'API error');
     tracker.recordRecall(undefined, true);
@@ -59,6 +62,52 @@ describe('Usage Tracker', () => {
     expect(snapshot.errors).toBe(1);
     expect(snapshot.retainCount).toBe(1);
     expect(snapshot.recallCount).toBe(1);
+  });
+});
+
+describe('Hindsight Memory Service - Cost Optimization', () => {
+  test('service throws on invalid bank ID "default"', async () => {
+    expect(() => {
+      new HindsightMemoryService(
+        'default',
+        'test-key',
+        'https://api.hindsight.vectorize.io'
+      );
+    }).toThrow(/must not be "default"/);
+  });
+
+  test('service throws on missing bank ID', async () => {
+    expect(() => {
+      new HindsightMemoryService(
+        '',
+        'test-key',
+        'https://api.hindsight.vectorize.io'
+      );
+    }).toThrow(/must be set/);
+  });
+
+  test('usage tracker starts with zero counts', async () => {
+    const service = new HindsightMemoryService(
+      'test-bank',
+      'test-key',
+      'https://api.hindsight.vectorize.io'
+    );
+    await service.init();
+    const observation = service.getUsageSnapshot();
+    expect(observation.retainCount).toBe(0);
+    expect(observation.recallCount).toBe(0);
+    expect(observation.reflectCount).toBe(0);
+  });
+
+  test('reflect permission is allowed when under limits', async () => {
+    const service = new HindsightMemoryService(
+      'test-bank',
+      'test-key',
+      'https://api.hindsight.vectorize.io'
+    );
+    await service.init();
+    const permission = service.canPerformReflect();
+    expect(permission.allowed).toBe(true);
   });
 });
 
@@ -135,49 +184,5 @@ describe('Secret Redaction', () => {
     expect(redacted).toContain('test_payment_retry');
     expect(redacted).toContain('timeout after 30s');
     expect(redacted).toContain('payment gateway mock');
-  });
-});
-
-describe('Hindsight Memory Service - Cost Optimization', () => {
-  test('service rejects invalid bank ID "default"', () => {
-    expect(() => {
-      new HindsightMemoryService(
-        'default',
-        'test-key',
-        'https://api.hindsight.vectorize.io'
-      );
-    }).toThrow(/must not be "default"/);
-  });
-
-  test('service rejects missing bank ID', () => {
-    expect(() => {
-      new HindsightMemoryService(
-        '',
-        'test-key',
-        'https://api.hindsight.vectorize.io'
-      );
-    }).toThrow(/must be set/);
-  });
-
-  test('usage tracker starts with zero counts', () => {
-    const service = new HindsightMemoryService(
-      'test-bank',
-      'test-key',
-      'https://api.hindsight.vectorize.io'
-    );
-    const snapshot = service.getUsageSnapshot();
-    expect(snapshot.retainCount).toBe(0);
-    expect(snapshot.recallCount).toBe(0);
-    expect(snapshot.reflectCount).toBe(0);
-  });
-
-  test('reflect permission is allowed when under limits', () => {
-    const service = new HindsightMemoryService(
-      'test-bank',
-      'test-key',
-      'https://api.hindsight.vectorize.io'
-    );
-    const permission = service.canPerformReflect();
-    expect(permission.allowed).toBe(true);
   });
 });

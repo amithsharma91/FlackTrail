@@ -47,6 +47,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('RETAIN: stores a confirmed outcome and redacts secrets before the SDK call', async () => {
     const service = makeService();
+    await service.init();
     const data = { ...investigationData, errorMessage: 'timeout API_KEY=sk-live-secret123' };
 
     await service.retainInvestigation('inc-1', data);
@@ -62,6 +63,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('RETAIN: duplicate retention for the same incident+signature is skipped (no second SDK call)', async () => {
     const service = makeService();
+    await service.init();
     const data = { ...investigationData };
 
     await service.retainInvestigation('inc-1', data);
@@ -72,6 +74,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('RETAIN: different incident+signature is retained separately', async () => {
     const service = makeService();
+    await service.init();
     await service.retainInvestigation('inc-1', { ...investigationData });
     await service.retainInvestigation('inc-2', { ...investigationData, incidentId: 'inc-2' });
 
@@ -80,6 +83,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('RETAIN: rejects unconfirmed outcomes (proposed hypotheses are not retained)', async () => {
     const service = makeService();
+    await service.init();
     await expect(
       service.retainInvestigation('inc-1', { ...investigationData, outcome: 'proposed' as const })
     ).rejects.toThrow(/Only confirmed outcomes/);
@@ -88,6 +92,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('RETAIN: rejects missing required fields before calling the SDK', async () => {
     const service = makeService();
+    await service.init();
     await expect(service.retainInvestigation('', investigationData)).rejects.toThrow(/incidentId/);
     expect(__mockClient.retain).not.toHaveBeenCalled();
   });
@@ -106,6 +111,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
     });
 
     const service = makeService();
+    await service.init();
     const results = await service.recallSimilar('sig-001');
 
     expect(__mockClient.recall).toHaveBeenCalledWith(bankId, 'sig-001', expect.any(Object));
@@ -124,6 +130,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
     __mockClient.recall.mockResolvedValue({ results: ten });
 
     const service = makeService();
+    await service.init();
     const results = await service.recallSimilar('sig');
 
     expect(results.length).toBeLessThanOrEqual(5);
@@ -132,12 +139,14 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
   test('RECALL: connection failure throws a wrapped error', async () => {
     __mockClient.recall.mockRejectedValue(new Error('ECONNREFUSED'));
     const service = makeService();
+    await service.init();
     await expect(service.recallSimilar('sig')).rejects.toThrow(/Hindsight recall failed/);
   });
 
   test('REFLECT: is an explicit operation and can be invoked directly', async () => {
     __mockClient.reflect.mockResolvedValue({ text: 'based on memory...', based_on: [{ id: 'mem-1', text: 'fact' }] });
     const service = makeService();
+    await service.init();
     const result = await service.reflectOnInvestigation('why did this fail?', 'context');
 
     expect(__mockClient.reflect).toHaveBeenCalledWith(bankId, 'why did this fail?', expect.any(Object));
@@ -147,18 +156,21 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('REFLECT: rejects empty query before calling the SDK', async () => {
     const service = makeService();
+    await service.init();
     await expect(service.reflectOnInvestigation('')).rejects.toThrow(/query is required/);
     expect(__mockClient.reflect).not.toHaveBeenCalled();
   });
 
-  test('canPerformReflect: allowed when under budget and call limits', () => {
+  test('canPerformReflect: allowed when under budget and call limits', async () => {
     const service = makeService();
+    await service.init();
     const permission = service.canPerformReflect();
     expect(permission.allowed).toBe(true);
   });
 
-  test('getUsageSnapshot: starts at zero for retain, recall, reflect', () => {
+  test('getUsageSnapshot: starts at zero for retain, recall, reflect', async () => {
     const service = makeService();
+    await service.init();
     const snapshot = service.getUsageSnapshot();
     expect(snapshot.retainCount).toBe(0);
     expect(snapshot.recallCount).toBe(0);
@@ -167,6 +179,7 @@ describe('Hindsight Service - Integration (SDK mocked, no real credits)', () => 
 
   test('resetUsageTracker: clears usage counts and retained signatures', async () => {
     const service = makeService();
+    await service.init();
     await service.retainInvestigation('inc-1', investigationData);
     service.resetUsageTracker();
     const snapshot = service.getUsageSnapshot();

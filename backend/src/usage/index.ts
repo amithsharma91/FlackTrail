@@ -17,6 +17,13 @@ import {
   HINDSIGHT_COSTS,
 } from './costs';
 
+export {
+  estimateRecallCost,
+  estimateReflectCost,
+  estimateRetainCost,
+  HINDSIGHT_COSTS,
+} from './costs';
+
 export interface UsageRecord {
   operation: 'retain' | 'recall' | 'reflect';
   timestamp: string;
@@ -24,17 +31,30 @@ export interface UsageRecord {
   estimatedCost: number; // local estimate
   success: boolean;
   error?: string;
+  timeout?: boolean; // true when the operation timed out and remote outcome is unknown
 }
 
-/**
- * Persistence adapter for usage records. Implementations (e.g. SQLite via
- * Subagent 3's persistence layer) must provide load/save/clear so that usage
- * counters and REFLECT limits survive backend restarts.
- */
 export interface UsagePersistence {
   loadRecords(): Promise<UsageRecord[]>;
   saveRecord(record: UsageRecord): Promise<void>;
   clearRecords(): Promise<void>;
+  // Reflection reservation (atomic, cross-process safe with SQLite).
+  // reserveReflect atomically checks limits and creates a pending reservation.
+  // Returns a reservation ID if allowed, null if blocked.
+  // With SQLite persistence, the check-and-insert happens inside a
+  // BEGIN IMMEDIATE transaction for cross-process atomicity.
+  reserveReflect(
+    estimatedCost: number,
+    currentReflectCount: number,
+    currentSpend: number,
+    limits: ReflectLimitConfig,
+  ): Promise<string | null>;
+  // confirmReflect marks a reservation as completed and records usage.
+  confirmReflect(reservationId: string, success: boolean, error?: string, timeout?: boolean): Promise<void>;
+  // releaseReflect cancels a pending reservation without recording usage.
+  releaseReflect(reservationId: string): Promise<void>;
+  // Load pending reservations for recovery after restart.
+  loadPendingReservations(): Promise<Array<{ id: string; estimated_cost: number }>>;
 }
 
 export interface UsageSnapshot {
@@ -61,10 +81,21 @@ export const DEFAULT_USAGE_CONFIG: UsageTrackerConfig = {
   reflectCallLimit: 10,
 };
 
+export interface ReflectLimitConfig {
+  reflectCallLimit: number;
+  monthlyBudgetUsd: number;
+}
+
 export class UsageTracker {
   private records: UsageRecord[] = [];
   private config: UsageTrackerConfig;
   private persistence?: UsagePersistence;
+  private initialized: boolean = false;
+  private initPromise: Promise<void> | null = null;
+  // In-memory reflection reservations (used when no persistence adapter).
+  // JS is single-threaded per event loop, so this is race-free within a process.
+  private reflectReservations: Map<string, { status: 'pending' | 'completed' | 'released'; estimatedCost: number }> = new Map();
+  private reflectReservationCounter = 0;
 
   constructor(
     config: Partial<UsageTrackerConfig> = {},
@@ -76,22 +107,74 @@ export class UsageTracker {
       ...config,
     };
     this.persistence = persistence;
-    // Load historical records from persistence if available.
-    // This is async; records may not be immediately available after construction.
-    if (this.persistence) {
-      this.persistence
-        .loadRecords()
-        .then((loaded) => {
-          this.records = loaded;
-        })
-        .catch(() => {
-          // Persistence load failure is non-fatal; start with empty records.
-          this.records = [];
-        });
+
+    // No async work in the constructor. Initialization happens exclusively
+    // through init() to avoid a race between the constructor's fire-and-forget
+    // loadRecords() and an explicit init() call.
+    if (!this.persistence) {
+      this.records = [];
+      this.initialized = true;
     }
   }
 
-  recordRetain(tokenCount?: number, success = true, error?: string): void {
+  /**
+   * Initialize the tracker by loading historical records from persistence.
+   * Must be called and awaited before calling any other method.
+   */
+  async init(): Promise<void> {
+    if (this.initialized) return;
+    if (this.initPromise) {
+      await this.initPromise;
+      return;
+    }
+    this.initPromise = this.loadRecords();
+    await this.initPromise;
+    this.initialized = true;
+
+    // Release any pending reservations from a previous session.
+    // They never made it to the external API, so they should not count
+    // against limits or budget after a restart.
+    if (this.persistence) {
+      try {
+        const pending = await this.persistence.loadPendingReservations();
+        for (const r of pending) {
+          await this.persistence.releaseReflect(r.id);
+        }
+      } catch {
+        // Persistence recovery failure is non-fatal.
+      }
+    } else {
+      // Release all in-memory pending reservations.
+      for (const [id, res] of this.reflectReservations) {
+        if (res.status === 'pending') {
+          res.status = 'released';
+        }
+      }
+    }
+  }
+
+  private async loadRecords(): Promise<void> {
+    if (this.persistence) {
+      try {
+        this.records = await this.persistence.loadRecords();
+      } catch {
+        this.records = [];
+      }
+    } else {
+      this.records = [];
+    }
+  }
+
+  private ensureInitialized(): void {
+    if (!this.initialized) {
+      throw new Error(
+        'UsageTracker not initialized. Call init() before using the tracker.'
+      );
+    }
+  }
+
+  recordRetain(tokenCount?: number, success = true, error?: string, timeout = false): void {
+    this.ensureInitialized();
     const estimatedCost = tokenCount
       ? estimateRetainCost(tokenCount)
       : estimateRetainCost(0); // fallback: 0 tokens = $0 estimate
@@ -102,6 +185,7 @@ export class UsageTracker {
       estimatedCost,
       success,
       error,
+      timeout,
     };
     this.records.push(record);
     if (this.persistence) {
@@ -111,7 +195,8 @@ export class UsageTracker {
     }
   }
 
-  recordRecall(tokenCount?: number, success = true, error?: string): void {
+  recordRecall(tokenCount?: number, success = true, error?: string, timeout = false): void {
+    this.ensureInitialized();
     const estimatedCost = tokenCount
       ? estimateRecallCost(tokenCount)
       : estimateRecallCost(0);
@@ -122,6 +207,7 @@ export class UsageTracker {
       estimatedCost,
       success,
       error,
+      timeout,
     };
     this.records.push(record);
     if (this.persistence) {
@@ -131,7 +217,8 @@ export class UsageTracker {
     }
   }
 
-  recordReflect(tokenCount?: number, success = true, error?: string): void {
+  recordReflect(tokenCount?: number, success = true, error?: string, timeout = false): void {
+    this.ensureInitialized();
     const estimatedCost = estimateReflectCost();
     const record: UsageRecord = {
       operation: 'reflect',
@@ -140,6 +227,7 @@ export class UsageTracker {
       estimatedCost,
       success,
       error,
+      timeout,
     };
     this.records.push(record);
     if (this.persistence) {
@@ -149,7 +237,132 @@ export class UsageTracker {
     }
   }
 
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // Reflection reservation (atomic check-and-reserve)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  /**
+   * Atomically reserve a REFLECT call slot.
+   *
+   * Checks the REFLECT call limit and monthly budget, considering both
+   * completed reflect operations and pending reservations. If allowed,
+   * creates a pending reservation and returns its ID. Returns null if blocked.
+   *
+   * With SQLite persistence, this uses BEGIN IMMEDIATE for cross-process
+   * atomicity. Without persistence, relies on JS single-threaded event loop.
+   */
+  async reserveReflect(estimatedCost: number): Promise<string | null> {
+    this.ensureInitialized();
+
+    if (this.persistence) {
+      // Gather current state for the atomic check inside the SQLite transaction.
+      const snapshot = this.getSnapshot();
+      const pendingCount = Array.from(this.reflectReservations.values()).filter(
+        (r) => r.status === 'pending' || r.status === 'completed',
+      ).length;
+      const totalReflects = snapshot.reflectCount + pendingCount;
+      const budget = this.getBudgetStatus();
+      return this.persistence.reserveReflect(
+        estimatedCost,
+        totalReflects,
+        budget.spentUsd,
+        {
+          reflectCallLimit: this.config.reflectCallLimit,
+          monthlyBudgetUsd: this.config.monthlyBudgetUsd,
+        }
+      );
+    }
+
+    // In-memory path: JS single-threaded, check-and-set is atomic.
+    const snapshot = this.getSnapshot();
+    const pendingCount = Array.from(this.reflectReservations.values()).filter(
+      (r) => r.status === 'pending' || r.status === 'completed',
+    ).length;
+    const totalReflects = snapshot.reflectCount + pendingCount;
+
+    if (totalReflects >= this.config.reflectCallLimit) {
+      return null;
+    }
+
+    const budget = this.getBudgetStatus();
+    const projectedSpent = budget.spentUsd + estimatedCost;
+    if (this.config.monthlyBudgetUsd > 0 && projectedSpent > this.config.monthlyBudgetUsd) {
+      return null;
+    }
+
+    this.reflectReservationCounter += 1;
+    const id = `reflect-res-${Date.now()}-${this.reflectReservationCounter}`;
+    this.reflectReservations.set(id, { status: 'pending', estimatedCost });
+    return id;
+  }
+
+  /**
+   * Confirm a reservation: mark it completed and record usage.
+   * Called after a successful or failed external REFLECT attempt.
+   */
+  async confirmReflect(
+    reservationId: string,
+    success: boolean,
+    error?: string,
+    timeout = false,
+  ): Promise<void> {
+    this.ensureInitialized();
+
+    const estimatedCost = estimateReflectCost();
+    const record: UsageRecord = {
+      operation: 'reflect',
+      timestamp: new Date().toISOString(),
+      tokenCount: undefined,
+      estimatedCost,
+      success,
+      error,
+      timeout,
+    };
+    this.records.push(record);
+    if (this.persistence) {
+      await this.persistence.confirmReflect(reservationId, success, error, timeout);
+      this.persistence.saveRecord(record).catch(() => {
+        // Persistence save failure is non-fatal; record is still tracked in memory.
+      });
+    } else {
+      const res = this.reflectReservations.get(reservationId);
+      if (res) {
+        res.status = 'completed';
+      }
+    }
+  }
+
+  /**
+   * Release a reservation without recording usage.
+   * Called when the external REFLECT was never attempted (e.g. client
+   * disconnected before the call). The reservation slot is freed.
+   */
+  async releaseReflect(reservationId: string): Promise<void> {
+    this.ensureInitialized();
+
+    if (this.persistence) {
+      await this.persistence.releaseReflect(reservationId);
+    } else {
+      const res = this.reflectReservations.get(reservationId);
+      if (res && res.status === 'pending') {
+        res.status = 'released';
+      }
+    }
+  }
+
+  /**
+   * Get the status of a reservation (in-memory only; SQLite returns 'unknown').
+   */
+  getReservationStatus(reservationId: string): 'pending' | 'completed' | 'released' | 'unknown' {
+    if (this.persistence) {
+      return 'unknown';
+    }
+    const res = this.reflectReservations.get(reservationId);
+    return res ? res.status : 'unknown';
+  }
+
   getSnapshot(): UsageSnapshot {
+    this.ensureInitialized();
     const retainRecords = this.records.filter((r) => r.operation === 'retain');
     const recallRecords = this.records.filter((r) => r.operation === 'recall');
     const reflectRecords = this.records.filter((r) => r.operation === 'reflect');
@@ -203,6 +416,7 @@ export class UsageTracker {
     warningLevel: 'none' | '50%' | '75%' | '90%';
     blocked: boolean;
   } {
+    this.ensureInitialized();
     const snapshot = this.getSnapshot();
     const spent = snapshot.totalEstimatedCost;
     const remaining = Math.max(0, this.config.monthlyBudgetUsd - spent);
@@ -224,6 +438,7 @@ export class UsageTracker {
   }
 
   canPerformReflect(): { allowed: boolean; reason?: string } {
+    this.ensureInitialized();
     const snapshot = this.getSnapshot();
     if (snapshot.reflectCount >= this.config.reflectCallLimit) {
       return {

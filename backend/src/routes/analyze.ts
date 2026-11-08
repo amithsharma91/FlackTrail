@@ -14,31 +14,28 @@ import { HindsightMemoryService } from '../hindsight/service';
 import { analyzeFailure } from '../reasoning';
 import { config } from '../config/env';
 import { asyncHandler, AppError } from '../middleware/errorHandler';
-import { incidents } from '../store/incidents';
+import {
+  createIncident,
+  getIncidentById,
+  listAllIncidents,
+  updateIncident,
+} from '../store/incidents';
 
 let hindsightService: HindsightMemoryService | null = null;
 
+export function setHindsightService(service: HindsightMemoryService): void {
+  hindsightService = service;
+}
+
 function getHindsightService(): HindsightMemoryService {
   if (!hindsightService) {
-    if (!config.hindsightApiKey || !config.hindsightBankId) {
-      throw new AppError(
-        'Hindsight not configured. Set HINDSIGHT_API_KEY and HINDSIGHT_BANK_ID.',
-        500
-      );
-    }
-    hindsightService = new HindsightMemoryService(
-      config.hindsightBankId,
-      config.hindsightApiKey,
-      config.hindsightApiUrl
+    throw new AppError(
+      'Hindsight not initialized. Call initializeApp() first.',
+      500
     );
   }
   return hindsightService;
 }
-
-// Normal analysis workflow calls RECALL only - never REFLECT.
-const NORMAL_ANALYSIS_CALLS_REFLECT = false;
-
-let incidentCounter = 0;
 
 export const analyzeIncident = asyncHandler(
   async (req: Request, res: Response): Promise<void> => {
@@ -55,7 +52,7 @@ export const analyzeIncident = asyncHandler(
     }
 
     // Step 2: Create incident ID
-    const incidentId = `inc-${Date.now()}-${++incidentCounter}`;
+    const incidentId = `inc-${Date.now()}-${Math.floor(Math.random() * 10000)}`;
 
     // Step 3: Hindsight RECALL - retrieve similar historical investigations
     // NOTE: Normal analysis calls RECALL only. REFLECT is never called here.
@@ -89,7 +86,7 @@ export const analyzeIncident = asyncHandler(
       throw new AppError(`AI analysis failed: ${err.message}`, 500);
     }
 
-    // Step 5: Store incident locally (in-memory for MVP)
+    // Step 5: Store incident in persistent store
     const incident: any = {
       id: incidentId,
       parsedFailure,
@@ -98,8 +95,9 @@ export const analyzeIncident = asyncHandler(
       status: 'proposed',
       outcome: undefined,
       createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
-    incidents.set(incidentId, incident as any);
+    createIncident(incident);
 
     const response: AnalyzeResponse = {
       incidentId,
@@ -114,7 +112,7 @@ export const analyzeIncident = asyncHandler(
 
 export const listIncidents = asyncHandler(
   async (_req: Request, res: Response): Promise<void> => {
-    const incidentList = Array.from(incidents.values()).map((inc: any) => ({
+    const incidentList = listAllIncidents().map((inc: any) => ({
       id: inc.id,
       testName: inc.parsedFailure.testName,
       errorMessage: inc.parsedFailure.errorMessage,
@@ -133,7 +131,7 @@ export const listIncidents = asyncHandler(
 
 export const getIncident = asyncHandler(
   async (req: Request, res: Response): Promise<void> => {
-    const incident = incidents.get(req.params.id);
+    const incident = getIncidentById(req.params.id);
     if (!incident) {
       throw new AppError('Incident not found', 404);
     }

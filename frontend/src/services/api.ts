@@ -1,3 +1,5 @@
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+
 async function handleResponse(res: Response) {
   if (!res.ok) {
     const err = (await res.json().catch(() => ({}))) as { error?: string };
@@ -6,9 +8,13 @@ async function handleResponse(res: Response) {
   return res.json();
 }
 
+function apiUrl(path: string): string {
+  return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
+}
+
 export const api = {
   analyze: async (logText: string, fileName?: string) => {
-    const res = await fetch('/api/analyze', {
+    const res = await fetch(apiUrl('/api/analyze'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ logText, fileName }),
@@ -17,18 +23,18 @@ export const api = {
   },
 
   getIncident: async (incidentId: string) => {
-    const res = await fetch(`/api/incidents/${incidentId}`);
+    const res = await fetch(apiUrl(`/api/incidents/${incidentId}`));
     return handleResponse(res);
   },
 
   /** List all recorded incidents (GET /api/incidents). */
   listIncidents: async () => {
-    const res = await fetch('/api/incidents');
+    const res = await fetch(apiUrl('/api/incidents'));
     return handleResponse(res);
   },
 
   resolveIncident: async (incidentId: string, body: any) => {
-    const res = await fetch(`/api/incidents/${incidentId}/resolve`, {
+    const res = await fetch(apiUrl(`/api/incidents/${incidentId}/resolve`), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -38,7 +44,7 @@ export const api = {
 
   /** Check backend health (GET /api/health). */
   health: async () => {
-    const res = await fetch('/api/health');
+    const res = await fetch(apiUrl('/api/health'));
     return handleResponse(res);
   },
 
@@ -48,7 +54,7 @@ export const api = {
    * (POST /api/reflect)
    */
   reflect: async (incidentId: string) => {
-    const res = await fetch('/api/reflect', {
+    const res = await fetch(apiUrl('/api/reflect'), {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ incidentId }),
@@ -58,7 +64,7 @@ export const api = {
 
   /** Check whether the current user has permission to run REFLECT (GET /api/reflect/permission). */
   reflectPermission: async () => {
-    const res = await fetch('/api/reflect/permission');
+    const res = await fetch(apiUrl('/api/reflect/permission'));
     return handleResponse(res);
   },
 };

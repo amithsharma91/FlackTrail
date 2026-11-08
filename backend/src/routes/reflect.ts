@@ -12,18 +12,15 @@ const router = Router();
 
 let hindsightService: HindsightMemoryService | null = null;
 
+export function setHindsightService(service: HindsightMemoryService): void {
+  hindsightService = service;
+}
+
 function getHindsightService(): HindsightMemoryService {
   if (!hindsightService) {
-    if (!config.hindsightApiKey || !config.hindsightBankId) {
-      throw new AppError(
-        'Hindsight not configured. Set HINDSIGHT_API_KEY and HINDSIGHT_BANK_ID.',
-        500
-      );
-    }
-    hindsightService = new HindsightMemoryService(
-      config.hindsightBankId,
-      config.hindsightApiKey,
-      config.hindsightApiUrl
+    throw new AppError(
+      'Hindsight not initialized. Call initializeApp() first.',
+      500
     );
   }
   return hindsightService;
@@ -48,26 +45,21 @@ router.post(
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
     const service = getHindsightService();
 
-    // Check if REFLECT is allowed before invoking
-    const permission = service.canPerformReflect();
-    if (!permission.allowed) {
-      res.status(403).json({
-        error: 'REFLECT call blocked',
-        reason: permission.reason,
-        code: 'REFLECT_LIMIT_EXCEEDED',
-      });
-      return;
-    }
-
     const body = ReflectRequestSchema.parse(req.body);
 
     try {
-      const result = await service.reflectOnInvestigation(
-        body.query,
-        body.context
-      );
+      const result = await service.executeReflect(body.query, body.context);
       res.status(200).json(result);
     } catch (err: any) {
+      if (err.message.includes('REFLECT blocked')) {
+        const permission = service.canPerformReflect();
+        res.status(403).json({
+          error: 'REFLECT call blocked',
+          reason: permission.reason || err.message,
+          code: 'REFLECT_LIMIT_EXCEEDED',
+        });
+        return;
+      }
       res.status(500).json({
         error: 'REFLECT failed',
         message: err.message,

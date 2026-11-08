@@ -13,9 +13,18 @@ import {
   ReflectPermission,
 } from '../shared/index';
 import { redactSecrets } from '../parser';
-import { UsageTracker, UsagePersistence } from '../usage';
+import { UsageTracker, UsagePersistence, estimateReflectCost } from '../usage';
+import { config } from '../config/env';
+import { TimeoutError, withTimeout } from '../utils/timeout';
 
 const MAX_RECALL_RESULTS = 5;
+
+// Application-level timeouts for Hindsight SDK operations.
+// The SDK (v0.1.16) does not expose AbortSignal or configurable request timeouts,
+// so these deadlines are enforced at the application layer using Promise.race().
+const RETAIN_TIMEOUT_MS = 10_000; // 10 seconds
+const RECALL_TIMEOUT_MS = 8_000; // 8 seconds
+const REFLECT_TIMEOUT_MS = 12_000; // 12 seconds
 
 /**
  * Persistence adapter for the retention ledger. Implementations (e.g. SQLite via
@@ -56,13 +65,17 @@ export class HindsightMemoryService implements HindsightService {
   private usageTracker: UsageTracker;
   private retainedSignatures: Set<string>; // duplicate-retention protection (in-memory cache)
   private persistence?: HindsightPersistence;
+  private retainTimeoutMs: number;
+  private recallTimeoutMs: number;
+  private reflectTimeoutMs: number;
 
   constructor(
     bankId: string,
     apiKey: string,
     apiUrl: string,
     persistence?: HindsightPersistence,
-    usagePersistence?: UsagePersistence
+    usagePersistence?: UsagePersistence,
+    timeouts?: { retainMs?: number; recallMs?: number; reflectMs?: number },
   ) {
     if (!bankId || bankId === 'default') {
       throw new Error('HINDSIGHT_BANK_ID must be set and must not be "default"');
@@ -74,13 +87,20 @@ export class HindsightMemoryService implements HindsightService {
     });
     this.usageTracker = new UsageTracker(
       {
-        monthlyBudgetUsd: 4.75,
-        reflectCallLimit: 10,
+        monthlyBudgetUsd: config.hindsightMonthlyBudgetUsd,
+        reflectCallLimit: config.hindsightReflectCallLimit,
       },
       usagePersistence
     );
     this.persistence = persistence;
     this.retainedSignatures = new Set();
+    this.retainTimeoutMs = timeouts?.retainMs ?? RETAIN_TIMEOUT_MS;
+    this.recallTimeoutMs = timeouts?.recallMs ?? RECALL_TIMEOUT_MS;
+    this.reflectTimeoutMs = timeouts?.reflectMs ?? REFLECT_TIMEOUT_MS;
+  }
+
+  async init(): Promise<void> {
+    await this.usageTracker.init();
   }
 
   /**
@@ -184,19 +204,23 @@ export class HindsightMemoryService implements HindsightService {
     };
 
     try {
-      const response: RetainResponse = await this.client.retain(
-        this.bankId,
-        content,
-        {
-          context: 'The FlakeTrail agent is speaking',
-          metadata,
-          documentId: data.incidentId,
-        }
+      const response: RetainResponse = await withTimeout(
+        this.client.retain(
+          this.bankId,
+          content,
+          {
+            context: 'The FlakeTrail agent is speaking',
+            metadata,
+            documentId: data.incidentId,
+          },
+        ),
+        this.retainTimeoutMs,
+        { operation: 'retain' },
       );
 
       if (!response.success) {
         throw new Error(
-          `Hindsight retain reported failure: items_count=${response.items_count}`
+          `Hindsight retain reported failure: items_count=${response.items_count}`,
         );
       }
 
@@ -209,11 +233,26 @@ export class HindsightMemoryService implements HindsightService {
       // Track usage with estimated token count (SDK does not return measured tokens)
       this.usageTracker.recordRetain(estimatedTokenCount, true);
     } catch (err: any) {
-      // Record the failed attempt for cost/error tracking, then propagate the error.
-      // Never silently claim retention succeeded.
+      // Timeout: remote outcome is unknown. Do NOT mark as retained in the
+      // dedupe cache or persistent ledger, since the server may have completed
+      // the write after we stopped waiting. Record as a timed-out attempt so
+      // it is accounted for in usage but not treated as a confirmed failure.
+      if (err instanceof TimeoutError) {
+        this.usageTracker.recordRetain(
+          estimatedTokenCount,
+          false,
+          err.message,
+          true,
+        );
+        throw new Error(
+          `Hindsight retain timed out: ${err.message}. Remote outcome unknown.`,
+        );
+      }
+
+      // Confirmed failure — record and propagate.
       this.usageTracker.recordRetain(estimatedTokenCount, false, err.message);
       throw new Error(
-        `Hindsight retain failed: ${err.message || String(err)}`
+        `Hindsight retain failed: ${err.message || String(err)}`,
       );
     }
   }
@@ -234,15 +273,19 @@ export class HindsightMemoryService implements HindsightService {
     const query = failureSignature;
 
     try {
-      const response: RecallResponse = await this.client.recall(
-        this.bankId,
-        query,
-        {
-          budget: 'mid',
-          trace: false,
-          includeEntities: true,
-          maxEntityTokens: 500,
-        }
+      const response: RecallResponse = await withTimeout(
+        this.client.recall(
+          this.bankId,
+          query,
+          {
+            budget: 'mid',
+            trace: false,
+            includeEntities: true,
+            maxEntityTokens: 500,
+          },
+        ),
+        this.recallTimeoutMs,
+        { operation: 'recall' },
       );
 
       const results = response.results || [];
@@ -274,6 +317,14 @@ export class HindsightMemoryService implements HindsightService {
         };
       });
     } catch (err: any) {
+      // Timeout: record as timed-out attempt.
+      if (err instanceof TimeoutError) {
+        this.usageTracker.recordRecall(undefined, false, err.message, true);
+        throw new Error(
+          `Hindsight recall timed out: ${err.message}. Remote outcome unknown.`,
+        );
+      }
+
       this.usageTracker.recordRecall(undefined, false, err.message);
       throw new Error(
         `Hindsight recall failed: ${err.message || String(err)}`
@@ -318,16 +369,18 @@ export class HindsightMemoryService implements HindsightService {
     }
 
     try {
-      const response: ReflectResponse = await this.client.reflect(
-        this.bankId,
-        query,
-        {
-          context,
-          budget: 'mid',
-        }
+      const response: ReflectResponse = await withTimeout(
+        this.client.reflect(
+          this.bankId,
+          query,
+          {
+            context,
+            budget: 'mid',
+          },
+        ),
+        this.reflectTimeoutMs,
+        { operation: 'reflect' },
       );
-
-      this.usageTracker.recordReflect(undefined, true);
 
       return {
         answer: response.text,
@@ -337,10 +390,91 @@ export class HindsightMemoryService implements HindsightService {
         })),
       };
     } catch (err: any) {
-      this.usageTracker.recordReflect(undefined, false, err.message);
+      // Timeout: remote outcome unknown. Record as timed-out attempt.
+      if (err instanceof TimeoutError) {
+        throw new Error(
+          `Hindsight reflect timed out: ${err.message}. Remote outcome unknown.`,
+        );
+      }
+
       throw new Error(
         `Hindsight reflect failed: ${err.message || String(err)}`
       );
+    }
+  }
+
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  // Reflection reservation delegation (atomic check-and-reserve)
+  // ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  /**
+   * Atomically reserve a REFLECT call slot.
+   * Delegates to UsageTracker (which uses SQLite BEGIN IMMEDIATE when persistent).
+   * Returns a reservation ID if allowed, null if blocked.
+   */
+  reserveReflect(): Promise<string | null> {
+    return this.usageTracker.reserveReflect(estimateReflectCost());
+  }
+
+  /**
+   * Confirm a reservation: mark it completed and record usage.
+   * Called after a successful or failed external REFLECT attempt.
+   */
+  confirmReflect(
+    reservationId: string,
+    success: boolean,
+    error?: string,
+    timeout = false,
+  ): Promise<void> {
+    return this.usageTracker.confirmReflect(
+      reservationId,
+      success,
+      error,
+      timeout,
+    );
+  }
+
+  /**
+   * Release a reservation without recording usage.
+   * Called when the external REFLECT was never attempted.
+   */
+  releaseReflect(reservationId: string): Promise<void> {
+    return this.usageTracker.releaseReflect(reservationId);
+  }
+
+  /**
+   * Execute a REFLECT with atomic reservation.
+   *
+   * This is the preferred entry point for REFLECT calls. It atomically
+   * reserves a call slot, invokes the external API, then confirms or
+   * releases the reservation based on the outcome.
+   *
+   * This prevents the check-then-act race condition where concurrent
+   * requests could both pass canPerformReflect() before either records
+   * usage.
+   */
+  async executeReflect(
+    query: string,
+    context?: string,
+  ): Promise<{ answer: string; basedOn: Array<{ id?: string; text: string }> }> {
+    if (!query) {
+      throw new Error('query is required');
+    }
+
+    const reservationId = await this.reserveReflect();
+    if (!reservationId) {
+      throw new Error('REFLECT blocked: call limit or budget exceeded');
+    }
+
+    try {
+      const result = await this.reflectOnInvestigation(query, context);
+      await this.confirmReflect(reservationId, true);
+      return result;
+    } catch (err: any) {
+      // Determine if it was a timeout for usage accounting.
+      const isTimeout = err.message.includes('timed out');
+      await this.confirmReflect(reservationId, false, err.message, isTimeout);
+      throw err;
     }
   }
 

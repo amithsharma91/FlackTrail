@@ -1,28 +1,16 @@
 import { describe, test, expect, vi, beforeEach } from 'vitest';
+import { OpenRouterProvider } from '../backend/src/llm/providers/openrouter';
+import { GeminiProvider } from '../backend/src/llm/providers/gemini';
+import { CloudflareProvider } from '../backend/src/llm/providers/cloudflare';
+import { UsageTracker } from '../backend/src/usage';
+import { redactSecrets } from '../backend/src/parser';
 
-// Mock fetch for all provider tests
 const mockFetch = vi.fn();
 vi.mock('node:fetch', () => ({
   default: mockFetch,
   __esModule: true,
 }));
 
-// Set env vars before importing provider modules that read them at module load
-process.env.OPENROUTER_API_KEY = 'sk-or-test-key-1234567890abcdef';
-process.env.OPENROUTER_MODEL = 'openrouter/free';
-process.env.OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
-process.env.GEMINI_API_KEY = 'AIza-test-key-1234567890';
-process.env.GEMINI_MODEL = 'gemini-1.5-flash';
-process.env.GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-
-// Import OpenRouter and Gemini classes (they don't read env vars at class construction)
-import { OpenRouterProvider } from '../backend/src/llm/providers/openrouter';
-import { GeminiProvider } from '../backend/src/llm/providers/gemini';
-import { UsageTracker } from '../backend/src/usage';
-import { LLMOrchestrator } from '../backend/src/llm/orchestrator';
-import { LLMProviderRegistry } from '../backend/src/llm/registry';
-
-// Helper to create a successful mock response
 function mockFetchResponse(status: number, body: any, statusText: string = 'OK') {
   mockFetch.mockResolvedValueOnce({
     status,
@@ -36,6 +24,9 @@ describe('OpenRouter Provider', () => {
   beforeEach(() => {
     mockFetch.mockReset();
     vi.stubGlobal('fetch', mockFetch);
+    process.env.OPENROUTER_API_KEY = 'sk-or-test-key-1234567890abcdef';
+    process.env.OPENROUTER_MODEL = 'openrouter/free';
+    process.env.OPENROUTER_BASE_URL = 'https://openrouter.ai/api/v1';
   });
 
   test('initializes with valid config', () => {
@@ -61,9 +52,9 @@ describe('OpenRouter Provider', () => {
       model: 'openrouter/free',
     });
 
-    const result = await provider.chat({
-      messages: [{ role: 'user', content: 'Hello' }],
-    });
+    const result = await provider.chat([
+      { role: 'user', content: 'Hello' },
+    ]);
 
     expect(result.content).toBe('This is a test response');
     expect(result.provider).toBe('openrouter');
@@ -117,6 +108,9 @@ describe('Gemini Provider', () => {
   beforeEach(() => {
     mockFetch.mockReset();
     vi.stubGlobal('fetch', mockFetch);
+    process.env.GEMINI_API_KEY = 'AIza-test-key';
+    process.env.GEMINI_MODEL = 'gemini-1.5-flash';
+    process.env.GEMINI_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
   });
 
   test('initializes with valid config', () => {
@@ -179,7 +173,6 @@ describe('Cloudflare Workers AI Provider', () => {
   });
 
   test('initializes with valid config', async () => {
-    // Set env vars before dynamic import (cloudflare.ts creates default instance at module load)
     process.env.CLOUDFLARE_ACCOUNT_ID = '24d4973f1cf52fe537962ec5cc3999a0';
     process.env.CLOUDFLARE_API_TOKEN = 'cfut-test-token-1234567890';
     process.env.CLOUDFLARE_MODEL = '@cf/google/gemma-4-26b-a4b-it';
@@ -289,6 +282,7 @@ describe('Unified Orchestrator', () => {
 
     const { LLMOrchestrator } = await import('../backend/src/llm/orchestrator');
     const tracker = new UsageTracker();
+    await tracker.init();
     const orchestrator = new LLMOrchestrator(tracker);
     const result = await orchestrator.generate([
       { role: 'user', content: 'Test prompt' },
@@ -299,9 +293,7 @@ describe('Unified Orchestrator', () => {
   });
 
   test('fallback provider triggers on failure', async () => {
-    // First call fails (OpenRouter)
     mockFetch.mockRejectedValueOnce(new Error('Network error'));
-    // Second call succeeds (Gemini fallback)
     mockFetchResponse(200, {
       candidates: [{ content: { parts: [{ text: 'Fallback response' }] } }],
       usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 10, totalTokenCount: 15 },
@@ -309,10 +301,12 @@ describe('Unified Orchestrator', () => {
 
     const { LLMOrchestrator } = await import('../backend/src/llm/orchestrator');
     const tracker = new UsageTracker();
+    await tracker.init();
     const orchestrator = new LLMOrchestrator(tracker);
     const result = await orchestrator.generateWithFallback({
       messages: [{ role: 'user', content: 'Test prompt' }],
-    }, { provider: 'openrouter' });
+      options: { provider: 'openrouter' },
+    });
 
     expect(result.content).toBe('Fallback response');
     expect(result.provider).toBe('gemini');
@@ -325,14 +319,16 @@ describe('Unified Orchestrator', () => {
     const tracker = new UsageTracker();
     const orchestrator = new LLMOrchestrator(tracker);
     await expect(
-      orchestrator.generateWithFallback([{ role: 'user', content: 'Test prompt' }], { provider: 'openrouter' })
+      orchestrator.generateWithFallback({
+        messages: [{ role: 'user', content: 'Test prompt' }],
+        options: { provider: 'openrouter' },
+      })
     ).rejects.toThrow();
   });
 });
 
 describe('Secret Redaction', () => {
-  test('redacts API keys before sending to LLM providers', async () => {
-    const { redactSecrets } = await import('../backend/src/parser');
+  test('redacts API keys before sending to LLM providers', () => {
     const text = 'API key: sk-or-test-key-1234567890 and CI error';
     const redacted = redactSecrets(text);
     expect(redacted).not.toContain('sk-or-test-key-1234567890');

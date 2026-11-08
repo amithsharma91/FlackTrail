@@ -2,7 +2,87 @@ import { describe, test, expect, beforeEach, beforeAll, afterAll, vi } from 'vit
 import { createServer } from 'http';
 import { AddressInfo } from 'net';
 
-// --- Mock the Hindsight service module (relative path resolves correctly) ---
+// Mock node:sqlite - functional in-memory store
+vi.mock('node:sqlite', () => {
+  const Database = class {
+    private records: Map<string, any> = new Map();
+
+    constructor(filename: string) {}
+
+    exec(sql: string) {}
+
+    prepare(sql: string) {
+      const isInsert = sql.includes('INSERT INTO incidents');
+      const isSelectById = sql.includes('SELECT * FROM incidents WHERE id = ?');
+      const isSelectAll = sql.includes('SELECT * FROM incidents ORDER BY');
+      const isSelectDup = sql.includes('SELECT 1 FROM incidents WHERE id = ? AND failure_signature = ?');
+      const isUpdate = sql.includes('UPDATE incidents SET');
+      const isDelete = sql.includes('DELETE FROM incidents');
+
+      return {
+        run: (...params: any[]) => {
+          if (isInsert) {
+            this.records.set(params[0], {
+              id: params[0],
+              test_name: params[1],
+              error_message: params[2],
+              error_type: params[3],
+              stack_trace: params[4],
+              failure_signature: params[5],
+              environment: params[6],
+              file_paths: params[7],
+              timestamp: params[8],
+              ci_job_id: params[9],
+              ci_branch: params[10],
+              raw_log_excerpt: params[11],
+              status: params[12],
+              outcome: params[13],
+              created_at: params[14],
+              updated_at: params[15],
+              historical_investigations: null,
+              ai_analysis: null,
+            });
+          } else if (isUpdate) {
+            const id = params[params.length - 1];
+            const record = this.records.get(id);
+            if (record) {
+              let idx = 0;
+              if (sql.includes('status = ?')) { record.status = params[idx++]; }
+              if (sql.includes('outcome = ?')) { record.outcome = params[idx++]; }
+              if (sql.includes('updated_at = ?')) { record.updated_at = params[idx++]; }
+              this.records.set(id, record);
+            }
+          } else if (isDelete) {
+            this.records.clear();
+          }
+          return this;
+        },
+        get: (...params: any[]) => {
+          if (isSelectById) {
+            return this.records.get(params[0]) || undefined;
+          }
+          if (isSelectDup) {
+            const record = this.records.get(params[0]);
+            if (record && record.failure_signature === params[1]) return { '1': 1 };
+            return undefined;
+          }
+          return undefined;
+        },
+        all: () => {
+          if (isSelectAll) {
+            return Array.from(this.records.values());
+          }
+          return [];
+        },
+        bind: () => this,
+      };
+    }
+    close(): void {}
+  };
+  return { Database };
+});
+
+// Mock the Hindsight service module (relative path resolves correctly)
 vi.mock('../backend/src/hindsight/service', () => {
   const mockService = {
     recallSimilarTracked: vi.fn().mockResolvedValue([]),
@@ -27,9 +107,12 @@ vi.mock('../backend/src/hindsight/service', () => {
 });
 
 import { app } from '../backend/src/index';
-import { incidents } from '../backend/src/store/incidents';
+import { clearAll, initIncidentStore } from '../backend/src/store/incidents';
 import { __mockService } from '../backend/src/hindsight/service';
 import { config } from '../backend/src/config/env';
+import { setHindsightService as setAnalyzeHindsightService } from '../backend/src/routes/analyze';
+import { setHindsightService as setIncidentsHindsightService } from '../backend/src/routes/incidents';
+import { Database } from 'node:sqlite';
 
 let server: ReturnType<typeof createServer>;
 let baseUrl: string;
@@ -44,6 +127,14 @@ beforeAll(async () => {
   config.hindsightBankId = process.env.HINDSIGHT_BANK_ID;
   config.hindsightApiUrl = process.env.HINDSIGHT_API_URL;
 
+  // Initialize the incident store with a mock database
+  const mockDb = new Database(':memory:') as any;
+  initIncidentStore(mockDb);
+
+  // Set the mock hindsight service for both analyze.ts and incidents.ts routes
+  setAnalyzeHindsightService(__mockService);
+  setIncidentsHindsightService(__mockService);
+
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address() as AddressInfo;
@@ -55,7 +146,7 @@ afterAll(async () => {
 });
 
 beforeEach(() => {
-  incidents.clear();
+  clearAll();
   __mockService.recallSimilarTracked.mockReset().mockResolvedValue([]);
   __mockService.retainInvestigation.mockReset().mockResolvedValue(undefined);
   __mockService.reflectOnInvestigation.mockReset().mockResolvedValue({ text: 'reflect answer', based_on: [] });
@@ -124,7 +215,7 @@ describe('Backend API - POST /api/analyze', () => {
     expect(json.historicalInvestigations.length).toBeLessThanOrEqual(5);
   });
 
-  test('whitespace-only log text returns 400 (invalid request / parse failure)', async () => {
+  test('whitespace-only log text returns 400 (invalid request)', async () => {
     const { status, json } = await post('/api/analyze', { logText: '   ' });
     expect(status).toBe(400);
     expect(json.error).toBeDefined();
@@ -183,7 +274,7 @@ describe('Backend API - Incident CRUD', () => {
   });
 
   test('GET /api/incidents/:id for missing incident returns 404', async () => {
-    const { status, json } = await get('/api/incidents/inc-does-not-exist');
+    const { status, json } = await get(`/api/incidents/inc-does-not-exist`);
     expect(status).toBe(404);
     expect(json.error).toBe('Incident not found');
   });
@@ -248,7 +339,7 @@ describe('Backend API - POST /api/incidents/:id/resolve', () => {
   });
 
   test('resolve on missing incident returns 404', async () => {
-    const { status } = await post('/api/incidents/inc-missing/resolve', {
+    const { status } = await post(`/api/incidents/inc-missing/resolve`, {
       status: 'failed',
     });
     expect(status).toBe(404);

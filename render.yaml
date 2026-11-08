@@ -1,0 +1,31 @@
+services:
+  - type: web
+    name: flaketrail-backend
+    env: node
+    rootDir: backend
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+      - key: DATABASE_PATH
+        value: ./data/flakeTrail.db
+      - key: HINDSIGHT_API_URL
+        sync: false
+      - key: HINDSIGHT_API_KEY
+        sync: false
+      - key: HINDSIGHT_BANK_ID
+        sync: false
+      - key: HINDSIGHT_MONTHLY_BUDGET_USD
+        value: 4.75
+      - key: HINDSIGHT_REFLECT_CALL_LIMIT
+        value: 10
+      - key: CORS_ORIGINS
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+    healthCheckPath: /api/health
+    autoDeploy: false
+    plan: free
