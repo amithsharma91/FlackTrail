@@ -258,20 +258,26 @@ export function analyzeFailure(input: ReasoningInput): Promise<AIAnalysis>;
 |----------|----------|-------------|
 | `HINDSIGHT_API_KEY` | Yes | Hindsight API key |
 | `HINDSIGHT_BANK_ID` | Yes | Hindsight memory bank ID |
-| `LLM_API_KEY` | Yes | LLM provider API key |
-| `LLM_PROVIDER` | Yes | LLM provider name (e.g., "openai", "anthropic") |
-| `LLM_MODEL` | Yes | LLM model name |
+| `OPENROUTER_API_KEY` | At least one provider | Primary LLM provider key (OpenRouter) |
+| `GEMINI_API_KEY` | At least one provider | First fallback LLM provider key (Gemini) |
+| `CLOUDFLARE_ACCOUNT_ID` | At least one provider | Final fallback provider account ID (Cloudflare Workers AI) |
+| `CLOUDFLARE_API_TOKEN` | At least one provider | Final fallback provider API token (Cloudflare Workers AI) |
+| `OPENROUTER_MODEL` | No | OpenRouter model (default `openrouter/free`) |
+| `GEMINI_MODEL` | No | Gemini model (default `gemini-1.5-flash`) |
+| `CLOUDFLARE_MODEL` | No | Cloudflare model (default `@cf/google/gemma-4-26b-a4b-it`) |
 | `PORT` | No | Backend port (default 3001) |
 | `NODE_ENV` | No | Environment (default development) |
 | `FRONTEND_URL` | No | Frontend URL for CORS |
+
+Provider fallback order is code-defined in the registry: OpenRouter → Gemini → Cloudflare Workers AI.
 
 ---
 
 ## 7. Hindsight Memory Rules (Mandatory)
 
 1. **RETAIN**: Store investigation outcome only after developer confirms result. Never retain an unverified AI hypothesis as a completed fix.
-2. **RECALL**: Retrieve similar historical investigations using failure signature + tags.
-3. **REFLECT**: Reason over retrieved memories + current failure to produce AI analysis.
+2. **RECALL**: Retrieve similar historical investigations using failure signature + tags before LLM reasoning.
+3. **REFLECT**: Explicit, optional operation only. Normal analysis does not invoke REFLECT; it uses RECALL results plus the configured LLM provider.
 4. **Status enforcement**: Backend enforces `verified` requires CI passed AND merged. Hindsight directives alone are insufficient.
 5. **One bank**: Use a single Hindsight memory bank (`HINDSIGHT_BANK_ID`).
 6. **Secret redaction**: Redact secrets before any Hindsight or LLM call.

@@ -112,7 +112,27 @@ import { __mockService } from '../backend/src/hindsight/service';
 import { config } from '../backend/src/config/env';
 import { setHindsightService as setAnalyzeHindsightService } from '../backend/src/routes/analyze';
 import { setHindsightService as setIncidentsHindsightService } from '../backend/src/routes/incidents';
+import { setAnalysisOrchestrator } from '../backend/src/reasoning';
+import { AllProvidersFailedError } from '../backend/src/llm/orchestrator';
 import { Database } from 'node:sqlite';
+
+const mockAnalysisOrchestrator = {
+  generateWithFallback: vi.fn(),
+};
+
+const mockLLMAnalysis = {
+  failureSummary: 'The payment gateway mock timed out.',
+  possibleCauses: [
+    {
+      cause: 'Shared mock state is not reset between tests.',
+      evidence: ['Timeout waiting for payment gateway mock'],
+      confidence: 'high',
+    },
+  ],
+  recommendedSteps: ['Reset the mock state between tests.'],
+  confidence: 'high',
+  uncertaintyExplanation: 'A verified memory supports this cause.',
+};
 
 let server: ReturnType<typeof createServer>;
 let baseUrl: string;
@@ -135,6 +155,9 @@ beforeAll(async () => {
   setAnalyzeHindsightService(__mockService);
   setIncidentsHindsightService(__mockService);
 
+  // Use a deterministic LLM response; provider adapters are covered separately.
+  setAnalysisOrchestrator(mockAnalysisOrchestrator);
+
   server = createServer(app);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   const addr = server.address() as AddressInfo;
@@ -147,6 +170,15 @@ afterAll(async () => {
 
 beforeEach(() => {
   clearAll();
+  mockAnalysisOrchestrator.generateWithFallback.mockReset().mockResolvedValue({
+    content: JSON.stringify(mockLLMAnalysis),
+    provider: 'openrouter',
+    model: 'openrouter/free',
+    latencyMs: 5,
+    attempts: 1,
+    fallbackUsed: false,
+    usage: { inputTokens: 50, outputTokens: 25 },
+  });
   __mockService.recallSimilarTracked.mockReset().mockResolvedValue([]);
   __mockService.retainInvestigation.mockReset().mockResolvedValue(undefined);
   __mockService.reflectOnInvestigation.mockReset().mockResolvedValue({ text: 'reflect answer', based_on: [] });
@@ -254,6 +286,58 @@ describe('Backend API - POST /api/analyze', () => {
     expect(status).toBe(200);
     const payload = JSON.stringify(json);
     expect(payload).not.toContain('ghp_abcdef1234567890');
+  });
+
+  test('returns 503 (not rule-based output) when every provider is unavailable', async () => {
+    mockAnalysisOrchestrator.generateWithFallback.mockRejectedValueOnce(
+      new AllProvidersFailedError([
+        {
+          provider: 'openrouter',
+          kind: 'transport',
+          statusCode: 401,
+          retryable: false,
+          message: 'Unauthorized',
+        },
+        {
+          provider: 'gemini',
+          kind: 'transport',
+          statusCode: 503,
+          retryable: true,
+          message: 'Unavailable',
+        },
+      ])
+    );
+
+    const { status, json } = await post('/api/analyze', { logText: validLog });
+
+    expect(status).toBe(503);
+    expect(json.aiAnalysis).toBeUndefined();
+    expect(json.error).toBe(
+      'AI analysis unavailable: all configured LLM providers failed'
+    );
+    expect(json).toHaveProperty('status', 503);
+    expect(json).toHaveProperty('timestamp');
+  });
+
+  test('returns 502 when every provider returns malformed structured output', async () => {
+    mockAnalysisOrchestrator.generateWithFallback.mockRejectedValueOnce(
+      new AllProvidersFailedError([
+        {
+          provider: 'openrouter',
+          kind: 'validation',
+          retryable: false,
+          message: 'malformed JSON',
+        },
+      ])
+    );
+
+    const { status, json } = await post('/api/analyze', { logText: validLog });
+
+    expect(status).toBe(502);
+    expect(json.aiAnalysis).toBeUndefined();
+    expect(json.error).toBe(
+      'AI analysis failed: all providers returned malformed analysis'
+    );
   });
 });
 

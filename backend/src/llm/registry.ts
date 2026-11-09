@@ -16,6 +16,13 @@ import {
 } from './providers/cloudflare';
 import type { LLMProvider } from './types';
 
+/**
+ * Explicit provider order. The first entry is the current primary provider;
+ * the remaining entries are the configured fallback order used by the
+ * orchestrator.
+ */
+const PROVIDER_ORDER = ['openrouter', 'gemini', 'cloudflare'] as const;
+
 const providers: Record<string, LLMProvider> = {
   openrouter: openRouterProvider,
   gemini: geminiProvider,
@@ -30,17 +37,24 @@ export function getProvider(name: string): LLMProvider | undefined {
 }
 
 /**
- * Return the names of every registered provider.
+ * Return the names of every registered provider in fallback order.
  */
 export function getAvailableProviders(): string[] {
-  return Object.keys(providers);
+  return [...PROVIDER_ORDER];
 }
 
 /**
- * Return the default provider instance (OpenRouter).
+ * Return the configured provider order: primary first, then fallbacks.
+ */
+export function getProviderOrder(): string[] {
+  return [...PROVIDER_ORDER];
+}
+
+/**
+ * Return the default (primary) provider instance (OpenRouter).
  */
 export function getDefaultProvider(): LLMProvider {
-  return providers.openrouter;
+  return providers[PROVIDER_ORDER[0]];
 }
 
 /**

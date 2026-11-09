@@ -61,6 +61,13 @@ export interface OrchestratorRequest {
     temperature?: number;
     maxTokens?: number;
   };
+  /**
+   * Optional semantic validation hook. If it throws, the orchestrator treats
+   * the provider response as unusable and falls back to the next provider.
+   * This lets callers reject malformed structured output without retrying the
+   * same provider for a non-transient response problem.
+   */
+  validate?: (response: OrchestratorResponse) => void | Promise<void>;
 }
 
 /**

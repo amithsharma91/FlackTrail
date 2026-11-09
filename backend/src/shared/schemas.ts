@@ -7,6 +7,29 @@ export const AnalyzeRequestSchema = z.object({
 
 export type AnalyzeRequestInput = z.infer<typeof AnalyzeRequestSchema>;
 
+/**
+ * Structured output every LLM provider must return for CI failure analysis.
+ * Historical evidence fields are assembled server-side from Hindsight memories
+ * so a model cannot invent provenance.
+ */
+export const LLMAnalysisSchema = z.object({
+  failureSummary: z.string().trim().min(1),
+  possibleCauses: z
+    .array(
+      z.object({
+        cause: z.string().trim().min(1),
+        evidence: z.array(z.string().trim().min(1)).min(1),
+        confidence: z.enum(['low', 'medium', 'high']),
+      })
+    )
+    .min(1),
+  recommendedSteps: z.array(z.string().trim().min(1)).min(1),
+  confidence: z.enum(['low', 'medium', 'high']),
+  uncertaintyExplanation: z.string().trim().min(1),
+});
+
+export type LLMAnalysisOutput = z.infer<typeof LLMAnalysisSchema>;
+
 export const OutcomeSubmissionSchema = z.object({
   incidentId: z.string().min(1, 'Incident ID is required'),
   status: z.enum(['proposed', 'failed', 'passed_unmerged', 'verified']),

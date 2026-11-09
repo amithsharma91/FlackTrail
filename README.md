@@ -64,9 +64,13 @@ Required environment variables:
 |----------|-------------|
 | `HINDSIGHT_API_KEY` | Hindsight API key (from https://hindsight.vectorize.io/) |
 | `HINDSIGHT_BANK_ID` | Hindsight memory bank ID |
-| `LLM_API_KEY` | LLM provider API key (e.g., OpenAI) |
-| `LLM_PROVIDER` | LLM provider (e.g., `openai`) |
-| `LLM_MODEL` | LLM model (e.g., `gpt-4o-mini`) |
+| `OPENROUTER_API_KEY` | Primary LLM provider key (OpenRouter) |
+| `GEMINI_API_KEY` | First fallback LLM provider key (Google AI Studio / Gemini) |
+| `CLOUDFLARE_ACCOUNT_ID` | Final fallback provider account ID (Cloudflare Workers AI) |
+| `CLOUDFLARE_API_TOKEN` | Final fallback provider API token (Cloudflare Workers AI) |
+| `OPENROUTER_MODEL`, `GEMINI_MODEL`, `CLOUDFLARE_MODEL` | Optional model overrides |
+
+At least one LLM provider must be configured. The code-defined primary provider is OpenRouter, with fallback to Gemini and then Cloudflare Workers AI. Provider base URLs can also be overridden with `OPENROUTER_BASE_URL`, `GEMINI_BASE_URL` (Cloudflare uses its fixed API base).
 
 ### Running Locally
 

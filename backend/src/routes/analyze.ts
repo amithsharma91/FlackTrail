@@ -9,9 +9,10 @@ import {
   OutcomeSubmissionSchema,
   validateOutcomeStatus,
 } from '../shared/index';
-import { parseCILog } from '../parser';
+import { parseCILog, redactSecrets } from '../parser';
 import { HindsightMemoryService } from '../hindsight/service';
-import { analyzeFailure } from '../reasoning';
+import { analyzeFailureDetailed, AIAnalysisFormatError } from '../reasoning';
+import { AllProvidersFailedError } from '../llm/orchestrator';
 import { config } from '../config/env';
 import { asyncHandler, AppError } from '../middleware/errorHandler';
 import {
@@ -75,15 +76,82 @@ export const analyzeIncident = asyncHandler(
     // Safety cap: pass at most 5 memories to reasoning
     historicalInvestigations = historicalInvestigations.slice(0, 5);
 
-    // Step 4: AI reasoning
+    // Step 4: AI reasoning (genuine LLM call through the existing registry)
     let aiAnalysis: AIAnalysis;
     try {
-      aiAnalysis = await analyzeFailure({
+      const analysisResult = await analyzeFailureDetailed({
         parsedFailure,
         historicalInvestigations,
       });
+      aiAnalysis = analysisResult.analysis;
+
+      // Server-side diagnostics only; no prompts or credentials are logged.
+      console.info(
+        '[llm-analysis] success',
+        JSON.stringify({
+          incidentId,
+          provider: analysisResult.diagnostics.provider,
+          model: analysisResult.diagnostics.model,
+          attempts: analysisResult.diagnostics.attempts,
+          fallbackUsed: analysisResult.diagnostics.fallbackUsed,
+          latencyMs: analysisResult.diagnostics.latencyMs,
+          inputTokens: analysisResult.diagnostics.usage?.inputTokens ?? null,
+          outputTokens: analysisResult.diagnostics.usage?.outputTokens ?? null,
+          memoryCount: historicalInvestigations.length,
+        })
+      );
     } catch (err: any) {
-      throw new AppError(`AI analysis failed: ${err.message}`, 500);
+      if (err instanceof AllProvidersFailedError) {
+        console.error(
+          '[llm-analysis] all providers failed',
+          JSON.stringify({
+            incidentId,
+            validationOnly: err.hasOnlyValidationFailures(),
+            attempts: err.attempts.map((attempt) => ({
+              provider: attempt.provider,
+              kind: attempt.kind,
+              statusCode: attempt.statusCode ?? null,
+              retryable: attempt.retryable,
+              message: redactSecrets(attempt.message).slice(0, 300),
+            })),
+          })
+        );
+
+        if (err.hasOnlyValidationFailures()) {
+          throw new AppError(
+            'AI analysis failed: all providers returned malformed analysis',
+            502
+          );
+        }
+
+        throw new AppError(
+          'AI analysis unavailable: all configured LLM providers failed',
+          503
+        );
+      }
+
+      if (err instanceof AIAnalysisFormatError) {
+        console.error(
+          '[llm-analysis] malformed response',
+          JSON.stringify({
+            incidentId,
+            message: redactSecrets(err.message).slice(0, 300),
+          })
+        );
+        throw new AppError(
+          'AI analysis failed: the model returned malformed analysis',
+          502
+        );
+      }
+
+      console.error(
+        '[llm-analysis] unexpected failure',
+        JSON.stringify({
+          incidentId,
+          message: redactSecrets(err?.message ?? String(err)).slice(0, 300),
+        })
+      );
+      throw new AppError('AI analysis failed', 500);
     }
 
     // Step 5: Store incident in persistent store

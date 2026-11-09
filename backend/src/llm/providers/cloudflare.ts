@@ -126,11 +126,13 @@ function buildPrompt(messages: LLMMessage[]): string {
 
 export class CloudflareProvider {
   readonly provider = PROVIDER;
-  private readonly accountId: string;
+  private readonly accountId?: string;
   private readonly model: string;
 
   constructor(opts: { accountId?: string; model?: string } = {}) {
-    this.accountId = opts.accountId ?? resolveAccountId();
+    // Account ID is resolved lazily in chat() so importing the registry does
+    // not fail when only another provider is configured.
+    this.accountId = opts.accountId;
     this.model = resolveModel(opts.model);
   }
 
@@ -143,7 +145,8 @@ export class CloudflareProvider {
    */
   async chat(opts: LLMChatOptions): Promise<LLMResponse> {
     const apiToken = resolveApiToken(); // throws if missing; token never logged
-    const url = `${CLOUDFLARE_API_BASE}/accounts/${this.accountId}/ai/run/${this.model}`;
+    const accountId = this.accountId ?? resolveAccountId();
+    const url = `${CLOUDFLARE_API_BASE}/accounts/${accountId}/ai/run/${this.model}`;
 
     const body: CloudflareAiRequest = {
       prompt: buildPrompt(opts.messages),
