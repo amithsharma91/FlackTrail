@@ -1,4 +1,8 @@
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || '';
+// Normalize the base URL: strip trailing slashes so that
+// `${baseUrl}${path}` never produces a double-slash URL
+// (e.g. "https://backend.onrender.com/" + "/api/analyze" would otherwise
+//  become "https://backend.onrender.com//api/analyze" -> Express 404).
+const API_BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
 
 async function handleResponse(res: Response) {
   if (!res.ok) {

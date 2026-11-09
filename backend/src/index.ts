@@ -12,7 +12,6 @@ import { initIncidentStore } from './store/incidents';
 import { HindsightMemoryService } from './hindsight/service';
 import { SQLiteRetentionPersistence } from './persistence/retentionPersistence';
 import { SqliteUsagePersistence } from './persistence/usagePersistence';
-import { UsageTracker } from './usage';
 
 const app = express();
 
@@ -65,14 +64,6 @@ export async function initializeApp(): Promise<void> {
 
   // Create Hindsight memory service with persistence
   const usagePersistence = new SqliteUsagePersistence(db);
-  const usageTracker = new UsageTracker(
-    {
-      monthlyBudgetUsd: config.hindsightMonthlyBudgetUsd,
-      reflectCallLimit: config.hindsightReflectCallLimit,
-    },
-    usagePersistence
-  );
-  await usageTracker.init();
 
   const retentionPersistence = new SQLiteRetentionPersistence(db);
   const hindsightService = new HindsightMemoryService(
@@ -82,6 +73,12 @@ export async function initializeApp(): Promise<void> {
     retentionPersistence,
     usagePersistence
   );
+
+  // Initialize the service's internal UsageTracker (loads persisted usage
+  // records). Without this, every record/recall/retain/reflect usage call
+  // throws "UsageTracker not initialized", which silently drops RECALL
+  // results and breaks budget/call-limit accounting.
+  await hindsightService.init();
 
   // Share the Hindsight service instance across route modules
   setAnalyzeHindsight(hindsightService);
