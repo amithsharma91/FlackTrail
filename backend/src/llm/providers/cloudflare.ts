@@ -12,8 +12,8 @@
  *   - CLOUDFLARE_API_TOKEN    (required)
  *        Bearer token sent in the `Authorization` header. Never included in
  *        error messages or logs.
- *   - CLOUDFLARE_MODEL        (optional, default: "@cf/google/gemma-4-26b-a4b-it")
- *        Model slug, e.g. "@cf/google/gemma-4-26b-a4b-it". Switched through
+ *   - CLOUDFLARE_MODEL        (optional, default: "@cf/zai-org/glm-4.7-flash")
+ *        Model slug, e.g. "@cf/zai-org/glm-4.7-flash". Switched through
  *        environment configuration.
  */
 
@@ -44,7 +44,7 @@ export interface LLMChatOptions {
 
 const PROVIDER = 'cloudflare';
 const CLOUDFLARE_API_BASE = 'https://api.cloudflare.com/client/v4';
-const DEFAULT_MODEL = '@cf/google/gemma-4-26b-a4b-it';
+const DEFAULT_MODEL = '@cf/zai-org/glm-4.7-flash';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_TOKENS = 1024;
 const REQUEST_TIMEOUT_MS = 30_000;

@@ -10,9 +10,9 @@
  *   - GEMINI_API_KEY   (required)
  *        Sent as the `key` query parameter (Google's recommended method for
  *        the REST API). Never included in error messages or logs.
- *   - GEMINI_MODEL     (optional, default: "gemini-1.5-flash")
- *        Model id, e.g. "gemini-1.5-flash", "gemini-1.5-pro",
- *        "gemini-2.0-flash". Switched through environment configuration.
+ *   - GEMINI_MODEL     (optional, default: "gemini-3.6-flash")
+ *        Model id, e.g. "gemini-3.6-flash", "gemini-2.0-flash",
+ *        "gemini-1.5-flash-002". Switched through environment configuration.
  *   - GEMINI_BASE_URL  (optional, default:
  *        "https://generativelanguage.googleapis.com/v1beta")
  *        Base URL of the Gemini Generative Language API. Trailing slashes
@@ -45,7 +45,7 @@ export interface LLMChatOptions {
 
 const PROVIDER = 'gemini';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
-const DEFAULT_MODEL = 'gemini-1.5-flash';
+const DEFAULT_MODEL = 'gemini-3.6-flash';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_TOKENS = 1024;
 const REQUEST_TIMEOUT_MS = 30_000;
