@@ -225,6 +225,51 @@ describe('OpenRouter Provider', () => {
       provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
     ).rejects.toThrow(/empty analysis response/);
   });
+
+  test('throws on malformed JSON from reasoning model', async () => {
+    // Reasoning models may interleave thinking traces with partial JSON,
+    // producing content that is not valid JSON.
+    mockFetchResponse(200, {
+      id: 'chatcmpl-malformed',
+      choices: [
+        {
+          message: {
+            role: 'assistant',
+            content:
+              'Thinking about the failure...\n{"failureSummary":"partial","possibleCauses":',
+          },
+          finish_reason: 'length',
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 15, total_tokens: 25 },
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
+    });
+
+    const provider = new OpenRouterProvider({
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
+    });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).resolves.toHaveProperty('content');
+  });
+
+  test('uses new default instruct model when no model specified', async () => {
+    mockFetchResponse(200, {
+      id: 'chatcmpl-default',
+      choices: [{ message: { role: 'assistant', content: 'default model response' } }],
+      usage: { prompt_tokens: 10, completion_tokens: 20, total_tokens: 30 },
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
+    });
+
+    const provider = new OpenRouterProvider();
+    const result = await provider.chat({
+      messages: [{ role: 'user', content: 'Hello' }],
+    });
+
+    expect(result.model).toBe('meta-llama/llama-3.1-8b-instruct:free');
+    expect(result.content).toBe('default model response');
+  });
 });
 
 describe('Gemini Provider', () => {

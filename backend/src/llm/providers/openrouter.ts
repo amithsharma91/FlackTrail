@@ -9,8 +9,8 @@
  * Environment variables:
  *   - OPENROUTER_API_KEY   (required)
  *        Bearer token sent in the `Authorization` header.
- *   - OPENROUTER_MODEL     (optional, default: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free")
- *        Model id, e.g. "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+ *   - OPENROUTER_MODEL     (optional, default: "meta-llama/llama-3.1-8b-instruct:free")
+ *        Model id, e.g. "meta-llama/llama-3.1-8b-instruct:free",
  *        "openrouter/free", "anthropic/claude-3-haiku".
  *   - OPENROUTER_BASE_URL  (optional, default: "https://openrouter.ai/api/v1")
  *        Base URL of the OpenRouter API. Trailing slashes are stripped.
@@ -42,7 +42,7 @@ export interface LLMChatOptions {
 
 const PROVIDER = 'openrouter';
 const DEFAULT_BASE_URL = 'https://openrouter.ai/api/v1';
-const DEFAULT_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+const DEFAULT_MODEL = 'meta-llama/llama-3.1-8b-instruct:free';
 const DEFAULT_TEMPERATURE = 0.2;
 const DEFAULT_MAX_TOKENS = 1024;
 const REQUEST_TIMEOUT_MS = 30_000;

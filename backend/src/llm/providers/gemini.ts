@@ -47,7 +47,7 @@ const PROVIDER = 'gemini';
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
 const DEFAULT_MODEL = 'gemini-3.6-flash';
 const DEFAULT_TEMPERATURE = 0.2;
-const DEFAULT_MAX_TOKENS = 1024;
+const DEFAULT_MAX_TOKENS = 4096;
 const REQUEST_TIMEOUT_MS = 30_000;
 
 class GeminiError extends Error {

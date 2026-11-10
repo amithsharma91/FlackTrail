@@ -61,7 +61,7 @@ export class AIAnalysisFormatError extends Error {
 const MAX_MEMORIES = 5;
 const MAX_MEMORY_TEXT_LENGTH = 1000;
 const MAX_FAILURE_TEXT_LENGTH = 2000;
-const ANALYSIS_MAX_TOKENS = 1600;
+const ANALYSIS_MAX_TOKENS = 4096;
 const ANALYSIS_TEMPERATURE = 0.2;
 
 const SYSTEM_PROMPT = `You are FlakeTrail, a CI failure analysis assistant.
