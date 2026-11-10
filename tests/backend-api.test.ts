@@ -310,12 +310,12 @@ describe('Backend API - POST /api/analyze', () => {
 
     const { status, json } = await post('/api/analyze', { logText: validLog });
 
-    expect(status).toBe(503);
+    expect(status).toBe(401);
     expect(json.aiAnalysis).toBeUndefined();
     expect(json.error).toBe(
-      'AI analysis unavailable: all configured LLM providers failed'
+      'AI provider authentication failed. Please contact the administrator.'
     );
-    expect(json).toHaveProperty('status', 503);
+    expect(json).toHaveProperty('status', 401);
     expect(json).toHaveProperty('timestamp');
   });
 

@@ -117,6 +117,8 @@ export const analyzeIncident = asyncHandler(
           })
         );
 
+        // If every provider returned validation failures (bad structured output),
+        // return 502.
         if (err.hasOnlyValidationFailures()) {
           throw new AppError(
             'AI analysis failed: all providers returned malformed analysis',
@@ -124,6 +126,42 @@ export const analyzeIncident = asyncHandler(
           );
         }
 
+        // Determine the most appropriate user-facing error based on the
+        // accumulated provider attempts. Authentication failures (401/403)
+        // are non-retryable and should surface immediately.
+        const authFailure = err.attempts.find(
+          (a) => a.statusCode === 401 || a.statusCode === 403
+        );
+        if (authFailure) {
+          throw new AppError(
+            'AI provider authentication failed. Please contact the administrator.',
+            authFailure.statusCode ?? 500
+          );
+        }
+
+        // Rate limit exceeded (429) - tell the user to retry shortly
+        const rateLimitFailure = err.attempts.find(
+          (a) => a.statusCode === 429
+        );
+        if (rateLimitFailure) {
+          throw new AppError(
+            'AI request limit reached. Please try again shortly.',
+            429
+          );
+        }
+
+        // Gateway timeout (504) - the request timed out
+        const timeoutFailure = err.attempts.find(
+          (a) => a.statusCode === 504
+        );
+        if (timeoutFailure) {
+          throw new AppError(
+            'AI analysis timed out. Please retry.',
+            504
+          );
+        }
+
+        // Default: all providers failed with transient errors (5xx)
         throw new AppError(
           'AI analysis unavailable: all configured LLM providers failed',
           503

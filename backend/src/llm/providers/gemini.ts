@@ -241,7 +241,8 @@ export class GeminiProvider {
     }
 
     // Treat empty or whitespace-only content as a validation failure so the
-    // orchestrator can fall back to the next provider.
+    // orchestrator can fall back to the next provider. Not retryable since
+    // empty content will always be empty.
     if (!content || !content.trim()) {
       const detail = finishReason ? ` (finish_reason: ${finishReason})` : '';
       throw new GeminiError(
@@ -253,6 +254,7 @@ export class GeminiProvider {
     // MAX_TOKENS means the response was truncated mid-output; the JSON is
     // almost certainly incomplete. Treat as a validation failure so the
     // orchestrator falls back rather than attempting to parse partial JSON.
+    // Not retryable since truncation will always produce incomplete JSON.
     if (finishReason === 'MAX_TOKENS') {
       throw new GeminiError(
         'Gemini response was truncated (finish_reason: MAX_TOKENS)',

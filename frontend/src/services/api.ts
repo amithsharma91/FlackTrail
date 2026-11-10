@@ -12,6 +12,19 @@ async function handleResponse(res: Response) {
   return res.json();
 }
 
+export class AnalysisError extends Error {
+  statusCode?: number;
+  userMessage?: string;
+
+  constructor(message: string, statusCode?: number, userMessage?: string) {
+    super(message);
+    this.name = 'AnalysisError';
+    this.statusCode = statusCode;
+    this.userMessage = userMessage;
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
 function apiUrl(path: string): string {
   return API_BASE_URL ? `${API_BASE_URL}${path}` : path;
 }

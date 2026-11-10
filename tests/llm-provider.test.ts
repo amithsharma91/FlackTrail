@@ -371,6 +371,80 @@ describe('Gemini Provider', () => {
       provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
     ).rejects.toThrow(/truncated/);
   });
+
+  test('throws on 503 (no retry - orchestrator handles fallback)', async () => {
+    mockFetchResponse(503, { error: { message: 'Model overloaded' } }, 'Service Unavailable');
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/503/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('throws on 429 rate limit (no retry - orchestrator handles fallback)', async () => {
+    mockFetchResponse(429, { error: { message: 'Rate limit exceeded' } }, 'Too Many Requests');
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/429/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('throws on 504 timeout (no retry - orchestrator handles fallback)', async () => {
+    mockFetchResponse(504, { error: { message: 'Gateway timeout' } }, 'Gateway Timeout');
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/504/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not retry on 401 authentication error', async () => {
+    mockFetchResponse(
+      401,
+      { error: { code: 401, message: 'API key not valid' } },
+      'Unauthorized'
+    );
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/401/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('does not retry on 403 permission error', async () => {
+    mockFetchResponse(
+      403,
+      { error: { code: 403, message: 'API key not valid' } },
+      'Forbidden'
+    );
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/403/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
+
+  test('fails immediately on 503 (no internal retry - orchestrator handles fallback)', async () => {
+    mockFetchResponse(503, { error: { message: 'Model overloaded' } }, 'Service Unavailable');
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/503/);
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('Cloudflare Workers AI Provider', () => {

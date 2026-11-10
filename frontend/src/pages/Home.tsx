@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Zap, FileText } from 'lucide-react';
+import { Zap, FileText, RefreshCw } from 'lucide-react';
 import { api } from '../services/api';
 import UploadZone from '../components/UploadZone';
 import ErrorAlert from '../components/ErrorAlert';
@@ -12,6 +12,7 @@ export default function Home() {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastSubmittedText, setLastSubmittedText] = useState<string | null>(null);
 
   const hasInput = text.trim().length > 0 || file !== null;
 
@@ -34,9 +35,27 @@ export default function Home() {
       }
 
       const response = await api.analyze(textToAnalyze, file?.name);
+      setLastSubmittedText(textToAnalyze);
       navigate(`/investigate/${response.incidentId}`);
     } catch (err: any) {
       // Never log raw log text or secrets to the console.
+      setError(
+        err.response?.data?.error || err.message || 'Analysis failed. Please try again.'
+      );
+      setLoading(false);
+    }
+  };
+
+  const handleRetry = async () => {
+    if (!lastSubmittedText) return;
+    setError(null);
+    setLoading(true);
+
+    try {
+      const response = await api.analyze(lastSubmittedText);
+      setLoading(false);
+      navigate(`/investigate/${response.incidentId}`);
+    } catch (err: any) {
       setError(
         err.response?.data?.error || err.message || 'Analysis failed. Please try again.'
       );
@@ -82,7 +101,28 @@ export default function Home() {
           />
 
           {error && (
-            <ErrorAlert message={error} onDismiss={() => setError(null)} />
+            <div className="space-y-3">
+              <ErrorAlert message={error} onDismiss={() => setError(null)} />
+              {lastSubmittedText && (
+                <button
+                  onClick={handleRetry}
+                  disabled={loading}
+                  className="w-full bg-blue-600 hover:bg-blue-700 disabled:bg-gray-300 text-white font-semibold py-3 px-4 rounded-lg transition-colors flex items-center justify-center gap-2"
+                >
+                  {loading ? (
+                    <>
+                      <Spinner size="sm" label="Retrying" className="text-white" />
+                      Retrying…
+                    </>
+                  ) : (
+                    <>
+                      <RefreshCw className="w-4 h-4" aria-hidden="true" />
+                      Retry Analysis
+                    </>
+                  )}
+                </button>
+              )}
+            </div>
           )}
 
           <button
