@@ -47,8 +47,16 @@ vi.mock('../backend/node_modules/@vectorize-io/hindsight-client/dist/src/index',
     }),
     reflect: vi.fn().mockResolvedValue({ text: 'answer', based_on: [] }),
   };
+  // Use a real class so `new HindsightClient(...)` is a valid constructible call.
+  // vi.fn(() => mockClient) can fail with "is not a constructor" under some
+  // Vitest versions when invoked with `new`.
+  class MockHindsightClient {
+    retain = mockClient.retain;
+    recall = mockClient.recall;
+    reflect = mockClient.reflect;
+  }
   return {
-    HindsightClient: vi.fn(() => mockClient),
+    HindsightClient: MockHindsightClient,
     __mockClient: mockClient,
   };
 });
