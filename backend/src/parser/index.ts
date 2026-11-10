@@ -71,10 +71,13 @@ export function parseCILog(
 
   const redactedLog = redactSecrets(logText);
 
-  // Extract test name - look for common patterns
+  // Extract test name - look for common patterns.
+  // Matches FAILED/FAIL/PASSED followed by an optional colon and whitespace,
+  // then either a pytest-style path::test_name or a bare test name.
+  // ERROR/Error lines are intentionally excluded so they never set testName.
   let testName = 'unknown';
   const testMatch = redactedLog.match(
-    /(?:FAILED|FAIL|PASSED|ERROR|Error)\s+[\w:.]*::?(\w[\w.]*)/i
+    /(?:FAILED|FAIL|PASSED)\s*:?\s*(?:[\w/.-]+::)?(\w[\w.]*)/i
   );
   if (testMatch) {
     testName = testMatch[1];
@@ -132,9 +135,24 @@ export function parseCILog(
   if (jobMatch) {
     ciJobId = `build-${jobMatch[1]}`;
   }
-  const branchMatch = redactedLog.match(/(?:branch|on)\s+(\S+)/i);
+  // Common English / error-message words that must never be treated as a CI branch.
+  const NON_BRANCH_WORDS = new Set([
+    'timeout', 'errors', 'error', 'failed', 'failure', 'failures', 'fail',
+    'exception', 'warnings', 'warning', 'invalid', 'credentials',
+    'database', 'connection', 'gateway', 'mock', 'after', 'waiting',
+    'payment', 'the', 'a', 'an', 'to', 'of', 'in', 'on', 'at', 'for',
+    'with', 'from', 'by', 'as', 'is', 'are', 'was', 'were', 'been',
+    'branch', 'pending', 'running', 'completed',
+  ]);
+
+  // \b prevents matching "on" inside words like "connection"; the guard below
+  // rejects common non-branch words such as "timeout", "error", "failed".
+  const branchMatch = redactedLog.match(/\b(?:branch|on)\s+(\S+)/i);
   if (branchMatch) {
-    ciBranch = branchMatch[1];
+    const candidate = branchMatch[1];
+    if (!NON_BRANCH_WORDS.has(candidate.toLowerCase())) {
+      ciBranch = candidate;
+    }
   }
 
   const failureSignature = generateFailureSignature(testName, errorMessage);

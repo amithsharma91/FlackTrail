@@ -30,6 +30,36 @@ describe('CI Parser', () => {
     const sig2 = parseCILog(log2).failureSignature;
     expect(sig1).toBe(sig2);
   });
+
+  test('extracts test name from "FAIL: test_name" colon-separated format', () => {
+    const log = `FAIL: test_user_login
+Error: Database connection timeout`;
+    const result = parseCILog(log);
+    expect(result.testName).toBe('test_user_login');
+    expect(result.ciBranch).toBeUndefined();
+  });
+
+  test('extracts test name from "PASSED test_foo" format', () => {
+    const result = parseCILog('PASSED test_foo');
+    expect(result.testName).toBe('test_foo');
+  });
+
+  test('does not set testName from an Error line', () => {
+    const result = parseCILog('Error: Database connection timeout');
+    expect(result.testName).toBe('unknown');
+  });
+
+  test('does not treat common English words after "on" as ciBranch', () => {
+    expect(parseCILog('FAILED test_foo - Error: something on timeout').ciBranch).toBeUndefined();
+    expect(parseCILog('FAILED test_foo - Error: something on error').ciBranch).toBeUndefined();
+    expect(parseCILog('FAILED test_foo - Error: something on failed').ciBranch).toBeUndefined();
+    expect(parseCILog('FAILED test_foo - Error: connection timeout').ciBranch).toBeUndefined();
+  });
+
+  test('extracts a real ciBranch from "on <branch>" and "branch <branch>"', () => {
+    expect(parseCILog('FAILED test_foo - Error: x\non main').ciBranch).toBe('main');
+    expect(parseCILog('FAILED test_foo - Error: x\nbranch feature/login').ciBranch).toBe('feature/login');
+  });
 });
 
 describe('Secret Redaction', () => {

@@ -93,7 +93,25 @@ export default function Investigation() {
     );
   }
 
-  if (!incident) return null;
+  if (!incident) {
+    return (
+      <div className="max-w-4xl mx-auto py-10 px-4">
+        <div className="max-w-lg mx-auto text-center">
+          <h2 className="text-lg font-semibold text-gray-900 mb-2">Investigation not found</h2>
+          <p className="text-gray-600 mb-6">
+            No investigation data was returned for this incident. The report may have been removed or the data is unavailable.
+          </p>
+          <button
+            onClick={() => navigate('/')}
+            className="inline-flex items-center gap-2 text-blue-600 hover:text-blue-800 text-sm font-medium"
+          >
+            <ArrowLeft className="w-4 h-4" aria-hidden="true" />
+            Return to home
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   const { parsedFailure, historicalInvestigations, aiAnalysis, status, outcome } = incident;
 

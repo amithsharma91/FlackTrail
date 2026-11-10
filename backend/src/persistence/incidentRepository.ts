@@ -41,8 +41,8 @@ export class IncidentRepository {
         id, test_name, error_message, error_type, stack_trace,
         failure_signature, environment, file_paths, timestamp,
         ci_job_id, ci_branch, raw_log_excerpt, status, outcome,
-        created_at, updated_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        created_at, updated_at, ai_analysis, historical_investigations
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       incident.id,
       incident.parsedFailure.testName,
@@ -63,7 +63,9 @@ export class IncidentRepository {
       incident.status,
       incident.outcome ? JSON.stringify(incident.outcome) : null,
       incident.createdAt,
-      incident.updatedAt ?? incident.createdAt
+      incident.updatedAt ?? incident.createdAt,
+      JSON.stringify(incident.aiAnalysis ?? {}),
+      JSON.stringify(incident.historicalInvestigations ?? [])
     );
   }
 

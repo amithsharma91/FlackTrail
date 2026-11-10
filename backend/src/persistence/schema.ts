@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS incidents (
   status TEXT NOT NULL DEFAULT 'proposed',
   outcome TEXT,
   created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
+  updated_at TEXT NOT NULL,
+  ai_analysis TEXT,
+  historical_investigations TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_incidents_failure_signature ON incidents(failure_signature);
@@ -74,4 +76,19 @@ ON CONFLICT(version) DO NOTHING;
 
 export function initSchema(db: DatabaseSync): void {
   db.exec(SCHEMA_SQL);
+
+  // Idempotent column migrations for existing databases created before the
+  // ai_analysis / historical_investigations columns were added. SQLite does
+  // not support "ADD COLUMN IF NOT EXISTS", so each ALTER TABLE is wrapped in
+  // try/catch (a duplicate-column error is safe to ignore).
+  try {
+    db.exec(`ALTER TABLE incidents ADD COLUMN ai_analysis TEXT`);
+  } catch {
+    // Column already exists; safe to ignore.
+  }
+  try {
+    db.exec(`ALTER TABLE incidents ADD COLUMN historical_investigations TEXT`);
+  } catch {
+    // Column already exists; safe to ignore.
+  }
 }
