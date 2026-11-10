@@ -102,7 +102,7 @@ interface GeminiGenerateContentRequest {
 interface GeminiGenerateContentResponse {
   candidates?: Array<{
     content?: {
-      parts?: Array<{ text?: string }>;
+      parts?: Array<{ text?: string; thought?: boolean }>;
     };
     finishReason?: string;
   }>;
@@ -226,7 +226,40 @@ export class GeminiProvider {
     }
 
     const data = (await res.json()) as GeminiGenerateContentResponse;
-    const content = data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
+    const candidate = data.candidates?.[0];
+    const parts = candidate?.content?.parts ?? [];
+    const finishReason = candidate?.finishReason;
+
+    // Gemini 3.6-flash supports thinking mode. The first part may be a
+    // reasoning trace (thought: true) without any answer text. Collect text
+    // from all non-thought parts so the actual answer is not missed.
+    let content = '';
+    for (const part of parts) {
+      if (part.text && !part.thought) {
+        content += part.text;
+      }
+    }
+
+    // Treat empty or whitespace-only content as a validation failure so the
+    // orchestrator can fall back to the next provider.
+    if (!content || !content.trim()) {
+      const detail = finishReason ? ` (finish_reason: ${finishReason})` : '';
+      throw new GeminiError(
+        `Gemini returned an empty analysis response${detail}`,
+        502
+      );
+    }
+
+    // MAX_TOKENS means the response was truncated mid-output; the JSON is
+    // almost certainly incomplete. Treat as a validation failure so the
+    // orchestrator falls back rather than attempting to parse partial JSON.
+    if (finishReason === 'MAX_TOKENS') {
+      throw new GeminiError(
+        'Gemini response was truncated (finish_reason: MAX_TOKENS)',
+        502
+      );
+    }
+
     const model = data.modelVersion ?? this.model;
 
     const usage = data.usageMetadata

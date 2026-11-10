@@ -183,6 +183,48 @@ describe('OpenRouter Provider', () => {
       provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
     ).rejects.toThrow(/request failed/i);
   });
+
+  test('throws on empty content from reasoning model', async () => {
+    mockFetchResponse(200, {
+      id: 'chatcmpl-empty',
+      choices: [
+        {
+          message: { role: 'assistant', content: '' },
+          finish_reason: 'length',
+        },
+      ],
+      usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
+    });
+
+    const provider = new OpenRouterProvider({
+      model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+    });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/empty analysis response/);
+  });
+
+  test('throws on whitespace-only content', async () => {
+    mockFetchResponse(200, {
+      id: 'chatcmpl-ws',
+      choices: [
+        {
+          message: { role: 'assistant', content: '   \n\t  ' },
+          finish_reason: 'stop',
+        },
+      ],
+      usage: { prompt_tokens: 5, completion_tokens: 0, total_tokens: 5 },
+      model: 'meta-llama/llama-3.1-8b-instruct:free',
+    });
+
+    const provider = new OpenRouterProvider();
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/empty analysis response/);
+  });
 });
 
 describe('Gemini Provider', () => {
@@ -233,6 +275,56 @@ describe('Gemini Provider', () => {
     await expect(
       provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
     ).rejects.toThrow(/403/);
+  });
+
+  test('throws on empty content (thinking-only response)', async () => {
+    mockFetchResponse(200, {
+      candidates: [
+        {
+          content: {
+            parts: [{ thought: true }],
+          },
+          finishReason: 'STOP',
+        },
+      ],
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 0,
+        totalTokenCount: 10,
+      },
+      modelVersion: 'gemini-3.6-flash',
+    });
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/empty analysis response/);
+  });
+
+  test('throws on truncated response (MAX_TOKENS)', async () => {
+    mockFetchResponse(200, {
+      candidates: [
+        {
+          content: {
+            parts: [{ text: '{"failureSummary":"incomplete' }],
+          },
+          finishReason: 'MAX_TOKENS',
+        },
+      ],
+      usageMetadata: {
+        promptTokenCount: 15,
+        candidatesTokenCount: 100,
+        totalTokenCount: 115,
+      },
+      modelVersion: 'gemini-3.6-flash',
+    });
+
+    const provider = new GeminiProvider({ model: 'gemini-3.6-flash' });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/truncated/);
   });
 });
 
@@ -296,6 +388,60 @@ describe('Cloudflare Workers AI Provider', () => {
     ).rejects.toThrow(/CLOUDFLARE_ACCOUNT_ID is required/);
 
     process.env.CLOUDFLARE_ACCOUNT_ID = accountId;
+  });
+
+  test('throws on authentication error (401)', async () => {
+    mockFetchResponse(
+      401,
+      { success: false, errors: [{ code: 10000, message: 'Authentication error' }] },
+      'Unauthorized'
+    );
+
+    const provider = new CloudflareProvider({
+      accountId: '24d4973f1cf52fe537962ec5cc3999a0',
+      model: '@cf/zai-org/glm-4.7-flash',
+    });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/401/);
+  });
+
+  test('throws on success:false with HTTP 200', async () => {
+    mockFetchResponse(200, {
+      success: false,
+      errors: [{ code: 10005, message: 'Model not found' }],
+      messages: [],
+    });
+
+    const provider = new CloudflareProvider({
+      accountId: '24d4973f1cf52fe537962ec5cc3999a0',
+      model: '@cf/zai-org/glm-4.7-flash',
+    });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/Model not found/);
+  });
+
+  test('throws on empty content', async () => {
+    mockFetchResponse(200, {
+      success: true,
+      result: {
+        response: '',
+        usage: { input_tokens: 8, output_tokens: 0 },
+        neurons: 0,
+      },
+    });
+
+    const provider = new CloudflareProvider({
+      accountId: '24d4973f1cf52fe537962ec5cc3999a0',
+      model: '@cf/zai-org/glm-4.7-flash',
+    });
+
+    await expect(
+      provider.chat({ messages: [{ role: 'user', content: 'Hello' }] })
+    ).rejects.toThrow(/empty analysis response/);
   });
 });
 
@@ -453,6 +599,149 @@ describe('Unified Orchestrator', () => {
     ).rejects.toThrow(/Unknown LLM provider/);
 
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+
+  test('falls back when OpenRouter returns empty content (reasoning model)', async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(geminiResponse(JSON.stringify(validAnalysis)));
+
+    const result = await makeOrchestrator(1).generateWithFallback({
+      messages: [{ role: 'user', content: 'Analyze this' }],
+      options: { provider: 'openrouter' },
+      validate: (response) => {
+        const validated = LLMAnalysisSchema.safeParse(JSON.parse(response.content));
+        if (!validated.success) throw new Error('invalid schema');
+      },
+    });
+
+    expect(result.provider).toBe('gemini');
+    expect(result.model).toBe('gemini-3.6-flash');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.attempts).toBe(2);
+  });
+
+  test('falls back when Gemini returns truncated response (MAX_TOKENS)', async () => {
+    // OpenRouter fails first (empty content), then Gemini truncated, then Cloudflare succeeds.
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        candidates: [
+          {
+            content: { parts: [{ text: '{"failureSummary":"truncated' }] },
+            finishReason: 'MAX_TOKENS',
+          },
+        ],
+        usageMetadata: { promptTokenCount: 15, candidatesTokenCount: 100, totalTokenCount: 115 },
+        modelVersion: 'gemini-3.6-flash',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(cloudflareResponse(JSON.stringify(validAnalysis)));
+
+    const result = await makeOrchestrator(1).generateWithFallback({
+      messages: [{ role: 'user', content: 'Analyze this' }],
+      validate: (response) => {
+        const validated = LLMAnalysisSchema.safeParse(JSON.parse(response.content));
+        if (!validated.success) throw new Error('invalid schema');
+      },
+    });
+
+    expect(result.provider).toBe('cloudflare');
+    expect(result.model).toBe('@cf/zai-org/glm-4.7-flash');
+    expect(result.fallbackUsed).toBe(true);
+    expect(result.attempts).toBe(3);
+  });
+
+  test('falls back when Cloudflare returns 401 authentication error', async () => {
+    // Provider order with cloudflare preferred: cloudflare → openrouter → gemini
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(401, {
+        success: false,
+        errors: [{ code: 10000, message: 'Authentication error' }],
+      }, 'Unauthorized')
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(geminiResponse(JSON.stringify(validAnalysis)));
+
+    const result = await makeOrchestrator(1).generateWithFallback({
+      messages: [{ role: 'user', content: 'Analyze this' }],
+      options: { provider: 'cloudflare' },
+      validate: (response) => {
+        const validated = LLMAnalysisSchema.safeParse(JSON.parse(response.content));
+        if (!validated.success) throw new Error('invalid schema');
+      },
+    });
+
+    expect(result.provider).toBe('gemini');
+    expect(result.fallbackUsed).toBe(true);
+  });
+
+  test('all providers fail: empty content + truncated JSON + 401 auth error', async () => {
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' }, finish_reason: 'length' }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'STOP' }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 0, totalTokenCount: 10 },
+        modelVersion: 'gemini-3.6-flash',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(401, {
+        success: false,
+        errors: [{ code: 10000, message: 'Authentication error' }],
+      }, 'Unauthorized')
+    );
+
+    try {
+      await makeOrchestrator(1).generateWithFallback({
+        messages: [{ role: 'user', content: 'Analyze this' }],
+        validate: (response) => {
+          const validated = LLMAnalysisSchema.safeParse(JSON.parse(response.content));
+          if (!validated.success) throw new Error('invalid schema');
+        },
+      });
+      throw new Error('expected failure');
+    } catch (err) {
+      expect(err).toBeInstanceOf(AllProvidersFailedError);
+      const failure = err as AllProvidersFailedError;
+      expect(failure.attempts.map((a) => a.provider)).toEqual([
+        'openrouter',
+        'gemini',
+        'cloudflare',
+      ]);
+      // OpenRouter and Gemini are validation failures; Cloudflare is transport (401)
+      expect(failure.hasOnlyValidationFailures()).toBe(false);
+      const cfAttempt = failure.attempts.find((a) => a.provider === 'cloudflare');
+      expect(cfAttempt?.statusCode).toBe(401);
+      expect(cfAttempt?.kind).toBe('transport');
+    }
   });
 });
 

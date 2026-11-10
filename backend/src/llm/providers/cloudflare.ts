@@ -209,9 +209,33 @@ export class CloudflareProvider {
     }
 
     const data = (await res.json()) as CloudflareAiResponse;
+
+    // Cloudflare Workers AI can return HTTP 200 with success: false and an
+    // errors array (e.g. authentication or model errors). Treat that as a
+    // provider failure even though the HTTP status is 2xx.
+    if (data.success === false) {
+      const detail =
+        data.errors?.[0]?.message ??
+        data.messages?.join('; ') ??
+        JSON.stringify(data);
+      throw new CloudflareError(
+        `Cloudflare Workers AI returned an error: ${detail}`,
+        502
+      );
+    }
+
     const content = data.result?.response ?? '';
     const resultUsage = data.result?.usage;
     const neurons = data.result?.neurons;
+
+    // Empty or whitespace-only content is a validation failure so the
+    // orchestrator can fall back to the next provider.
+    if (!content || !content.trim()) {
+      throw new CloudflareError(
+        'Cloudflare Workers AI returned an empty analysis response',
+        502
+      );
+    }
 
     // Extract usage when tokens are reported, or when Cloudflare reports
     // neuron consumption (available for some models) even without tokens.

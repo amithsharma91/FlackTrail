@@ -85,6 +85,7 @@ interface OpenRouterCompletionResponse {
   model?: string;
   choices?: Array<{
     message?: { content?: string };
+    finish_reason?: string;
   }>;
   usage?: {
     prompt_tokens?: number;
@@ -179,8 +180,23 @@ export class OpenRouterProvider {
     }
 
     const data = (await res.json()) as OpenRouterCompletionResponse;
-    const content = data.choices?.[0]?.message?.content ?? '';
+    const choice = data.choices?.[0];
+    const content = choice?.message?.content ?? '';
+    const finishReason = choice?.finish_reason;
     const model = data.model ?? this.model;
+
+    // Reasoning models (e.g. nemotron-3-nano-omni-30b-a3b-reasoning:free) may
+    // return an empty message content when the generation is reasoning-only or
+    // was truncated. Treat empty or whitespace-only content as a validation
+    // failure so the orchestrator can fall back to the next provider instead of
+    // silently producing an empty analysis.
+    if (!content || !content.trim()) {
+      const detail = finishReason ? ` (finish_reason: ${finishReason})` : '';
+      throw new OpenRouterError(
+        `OpenRouter returned an empty analysis response${detail}`,
+        502
+      );
+    }
 
     const usage = data.usage
       ? {
