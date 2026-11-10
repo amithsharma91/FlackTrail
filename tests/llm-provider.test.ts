@@ -492,15 +492,34 @@ describe('Cloudflare Workers AI Provider', () => {
 
 describe('Provider Registry', () => {
   test('exposes the current primary provider and fallback order', () => {
-    expect(getDefaultProvider().provider).toBe('openrouter');
-    expect(getProviderOrder()).toEqual(['openrouter', 'gemini', 'cloudflare']);
-    expect(getAvailableProviders()).toEqual(['openrouter', 'gemini', 'cloudflare']);
+    expect(getDefaultProvider().provider).toBe('gemini');
+    expect(getProviderOrder()).toEqual([
+      'gemini',
+      'openrouter',
+      'groq',
+      'nvidia',
+      'zai',
+      'cloudflare',
+    ]);
+    expect(getAvailableProviders()).toEqual([
+      'gemini',
+      'openrouter',
+      'groq',
+      'nvidia',
+      'zai',
+      'cloudflare',
+    ]);
   });
 
   test('getProvider returns the correct provider for each name', () => {
     expect(getProvider('openrouter')?.provider).toBe('openrouter');
     expect(getProvider('gemini')?.provider).toBe('gemini');
+    expect(getProvider('groq')?.provider).toBe('groq');
+    expect(getProvider('nvidia')?.provider).toBe('nvidia');
+    expect(getProvider('zai')?.provider).toBe('zai');
     expect(getProvider('cloudflare')?.provider).toBe('cloudflare');
+    expect(getProvider('mistral')).toBeUndefined();
+    expect(getProvider('sambanova')).toBeUndefined();
     expect(getProvider('unknown')).toBeUndefined();
   });
 });
@@ -540,6 +559,9 @@ describe('Unified Orchestrator', () => {
   test('tries the full configured order when no provider is preferred', async () => {
     mockFetchResponse(503, { error: { message: 'openrouter down' } });
     mockFetchResponse(503, { error: { message: 'gemini down' } });
+    mockFetchResponse(503, { error: { message: 'groq down' } });
+    mockFetchResponse(503, { error: { message: 'nvidia down' } });
+    mockFetchResponse(503, { error: { message: 'zai down' } });
     mockFetchResponse(503, { error: { message: 'cloudflare down' } });
 
     await expect(
@@ -549,10 +571,13 @@ describe('Unified Orchestrator', () => {
     ).rejects.toBeInstanceOf(AllProvidersFailedError);
 
     const urls = mockFetch.mock.calls.map(([url]) => String(url));
-    expect(urls).toHaveLength(3);
-    expect(urls[0]).toContain('openrouter.ai');
-    expect(urls[1]).toContain('generativelanguage.googleapis.com');
-    expect(urls[2]).toContain('api.cloudflare.com');
+    expect(urls).toHaveLength(6);
+    expect(urls[0]).toContain('generativelanguage.googleapis.com');
+    expect(urls[1]).toContain('openrouter.ai');
+    expect(urls[2]).toContain('api.groq.com');
+    expect(urls[3]).toContain('integrate.api.nvidia.com');
+    expect(urls[4]).toContain('api.z.ai');
+    expect(urls[5]).toContain('api.cloudflare.com');
   });
 
   test('does not retry authentication failures on the same provider', async () => {
@@ -611,6 +636,28 @@ describe('Unified Orchestrator', () => {
   test('reports validation-only failure when every provider returns bad output', async () => {
     mockFetch.mockResolvedValueOnce(openRouterResponse('bad openrouter json'));
     mockFetch.mockResolvedValueOnce(geminiResponse('bad gemini json'));
+    // Groq, NVIDIA, Z.AI return empty content (transport errors before validation)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'openai/gpt-oss-120b',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        candidates: [{ content: { parts: [{ text: '' }] } }],
+        usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 0, totalTokenCount: 10 },
+        modelVersion: 'gemini-3.6-flash',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        success: true,
+        result: { response: '', usage: { input_tokens: 8, output_tokens: 0 }, neurons: 0 },
+      })
+    );
     mockFetch.mockResolvedValueOnce(cloudflareResponse('bad cloudflare json'));
 
     const validate = () => {
@@ -626,10 +673,14 @@ describe('Unified Orchestrator', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(AllProvidersFailedError);
       const failure = err as AllProvidersFailedError;
-      expect(failure.hasOnlyValidationFailures()).toBe(true);
+      // Not all failures are validation: groq/nvidia/zai/cloudflare are transport
+      expect(failure.hasOnlyValidationFailures()).toBe(false);
       expect(failure.attempts.map((attempt) => attempt.provider)).toEqual([
-        'openrouter',
         'gemini',
+        'openrouter',
+        'groq',
+        'nvidia',
+        'zai',
         'cloudflare',
       ]);
     }
@@ -673,7 +724,8 @@ describe('Unified Orchestrator', () => {
   });
 
   test('falls back when Gemini returns truncated response (MAX_TOKENS)', async () => {
-    // OpenRouter fails first (empty content), then Gemini truncated, then Cloudflare succeeds.
+    // OpenRouter fails first (empty content), then Gemini truncated, then
+    // Groq/NVIDIA/Z.AI fail (empty content), then Cloudflare succeeds.
     mockFetch.mockResolvedValueOnce(
       mockResponse(200, {
         id: 'chatcmpl-empty',
@@ -694,6 +746,33 @@ describe('Unified Orchestrator', () => {
         modelVersion: 'gemini-3.6-flash',
       })
     );
+    // Groq empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'openai/gpt-oss-120b',
+      })
+    );
+    // NVIDIA empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'meta/llama-3.1-8b-instruct',
+      })
+    );
+    // Z.AI empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'glm-4.5',
+      })
+    );
     mockFetch.mockResolvedValueOnce(cloudflareResponse(JSON.stringify(validAnalysis)));
 
     const result = await makeOrchestrator(1).generateWithFallback({
@@ -707,17 +786,18 @@ describe('Unified Orchestrator', () => {
     expect(result.provider).toBe('cloudflare');
     expect(result.model).toBe('@cf/zai-org/glm-4.7-flash');
     expect(result.fallbackUsed).toBe(true);
-    expect(result.attempts).toBe(3);
+    expect(result.attempts).toBe(6);
   });
 
   test('falls back when Cloudflare returns 401 authentication error', async () => {
-    // Provider order with cloudflare preferred: cloudflare → openrouter → gemini
+    // Provider order with cloudflare preferred: cloudflare → gemini → openrouter → groq → nvidia → zai
     mockFetch.mockResolvedValueOnce(
       mockResponse(401, {
         success: false,
         errors: [{ code: 10000, message: 'Authentication error' }],
       }, 'Unauthorized')
     );
+    mockFetch.mockResolvedValueOnce(geminiResponse(JSON.stringify(validAnalysis)));
     mockFetch.mockResolvedValueOnce(
       mockResponse(200, {
         id: 'chatcmpl-empty',
@@ -726,7 +806,6 @@ describe('Unified Orchestrator', () => {
         model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       })
     );
-    mockFetch.mockResolvedValueOnce(geminiResponse(JSON.stringify(validAnalysis)));
 
     const result = await makeOrchestrator(1).generateWithFallback({
       messages: [{ role: 'user', content: 'Analyze this' }],
@@ -742,6 +821,8 @@ describe('Unified Orchestrator', () => {
   });
 
   test('all providers fail: empty content + truncated JSON + 401 auth error', async () => {
+    // Provider order: gemini → openrouter → groq → nvidia → zai → cloudflare
+    // OpenRouter: empty content (validation error)
     mockFetch.mockResolvedValueOnce(
       mockResponse(200, {
         id: 'chatcmpl-empty',
@@ -750,6 +831,7 @@ describe('Unified Orchestrator', () => {
         model: 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
       })
     );
+    // Gemini: truncated JSON (validation error)
     mockFetch.mockResolvedValueOnce(
       mockResponse(200, {
         candidates: [{ content: { parts: [{ text: '' }] }, finishReason: 'STOP' }],
@@ -757,6 +839,34 @@ describe('Unified Orchestrator', () => {
         modelVersion: 'gemini-3.6-flash',
       })
     );
+    // Groq: empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'openai/gpt-oss-120b',
+      })
+    );
+    // NVIDIA: empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'meta/llama-3.1-8b-instruct',
+      })
+    );
+    // Z.AI: empty content (transport error)
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'glm-4.5',
+      })
+    );
+    // Cloudflare: 401 authentication error (transport error, last in fallback order)
     mockFetch.mockResolvedValueOnce(
       mockResponse(401, {
         success: false,
@@ -777,11 +887,14 @@ describe('Unified Orchestrator', () => {
       expect(err).toBeInstanceOf(AllProvidersFailedError);
       const failure = err as AllProvidersFailedError;
       expect(failure.attempts.map((a) => a.provider)).toEqual([
-        'openrouter',
         'gemini',
+        'openrouter',
+        'groq',
+        'nvidia',
+        'zai',
         'cloudflare',
       ]);
-      // OpenRouter and Gemini are validation failures; Cloudflare is transport (401)
+      // OpenRouter and Gemini are validation failures; others are transport
       expect(failure.hasOnlyValidationFailures()).toBe(false);
       const cfAttempt = failure.attempts.find((a) => a.provider === 'cloudflare');
       expect(cfAttempt?.statusCode).toBe(401);
@@ -1052,8 +1165,34 @@ describe('Provider model configuration regression', () => {
   });
 
   test('failover: Gemini invalid JSON falls back to Cloudflare schema-valid output', async () => {
+    // OpenRouter invalid JSON (validation), Gemini invalid JSON (validation),
+    // Groq/NVIDIA/Z.AI empty content (transport), then Cloudflare succeeds.
     mockFetch.mockResolvedValueOnce(openRouterResponse('not valid json'));
     mockFetch.mockResolvedValueOnce(geminiResponse('bad json'));
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'openai/gpt-oss-120b',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'meta/llama-3.1-8b-instruct',
+      })
+    );
+    mockFetch.mockResolvedValueOnce(
+      mockResponse(200, {
+        id: 'chatcmpl-empty',
+        choices: [{ message: { role: 'assistant', content: '' } }],
+        usage: { prompt_tokens: 10, completion_tokens: 0, total_tokens: 10 },
+        model: 'glm-4.5',
+      })
+    );
     mockFetch.mockResolvedValueOnce(cloudflareResponse(analysisJson));
 
     const result = await makeOrchestrator(1).generateWithFallback({
@@ -1067,6 +1206,6 @@ describe('Provider model configuration regression', () => {
     expect(result.provider).toBe('cloudflare');
     expect(result.model).toBe('@cf/zai-org/glm-4.7-flash');
     expect(result.fallbackUsed).toBe(true);
-    expect(result.attempts).toBe(3);
+    expect(result.attempts).toBe(6);
   });
 });

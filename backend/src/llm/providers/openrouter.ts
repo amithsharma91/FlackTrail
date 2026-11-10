@@ -11,7 +11,9 @@
  *        Bearer token sent in the `Authorization` header.
  *   - OPENROUTER_MODEL     (optional, default: "meta-llama/llama-3.1-8b-instruct:free")
  *        Model id, e.g. "meta-llama/llama-3.1-8b-instruct:free",
- *        "openrouter/free", "anthropic/claude-3-haiku".
+ *        "openrouter/free", "anthropic/claude-3-haiku". Verified listed in
+ *        OpenRouter's free model catalog; note OpenRouter free models rotate
+ *        and may temporarily return 404 — monitor availability.
  *   - OPENROUTER_BASE_URL  (optional, default: "https://openrouter.ai/api/v1")
  *        Base URL of the OpenRouter API. Trailing slashes are stripped.
  */

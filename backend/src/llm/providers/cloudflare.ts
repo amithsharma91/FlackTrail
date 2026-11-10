@@ -14,7 +14,9 @@
  *        error messages or logs.
  *   - CLOUDFLARE_MODEL        (optional, default: "@cf/zai-org/glm-4.7-flash")
  *        Model slug, e.g. "@cf/zai-org/glm-4.7-flash". Switched through
- *        environment configuration.
+ *        environment configuration. Verified available on Cloudflare Workers AI
+ *        (https://developers.cloudflare.com/workers-ai/models/glm-4.7-flash/);
+ *        a 401 indicates an auth/token issue, not an invalid model.
  */
 
 export interface LLMMessage {
